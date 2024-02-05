@@ -49,7 +49,7 @@ void setup() {
     sr.interrupt(ShiftRegisterPWM::UpdateFrequency::SuperFast);
 
     // initialize serial port
-    Serial.begin(BAUD);
+    Serial.begin(BAUD_RATE);
     while (!Serial) {
       ; // wait for serial port to connect. Needed for native USB port only
     }
