@@ -4,6 +4,9 @@ typedef int8_t   i8;
 #include "common/common.h"
 #include "ShiftRegisterPWM.h"
 
+// Comment this out to prevent looping the song
+#define LOOPING
+
 #define MSG_BUFFER_CAP 128
 #define KEYS_AMOUNT 88 // Amount of keys on the piano
 #define STARTING_KEY PIANO_KEY_A
@@ -13,17 +16,14 @@ typedef int8_t   i8;
 #define MAX_KEYS_AT_ONCE 10 // The maximum amount of keys to play at once
 #define MIN_KEY_VAL 185 // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255 // Maximum value to set for a motor to move, if a key should be played
-#define CLOCK_CYCLE_LEN 88 // in milliseconds
+#define CLOCK_CYCLE_LEN 1 // in milliseconds
 #define SHIFT_REGISTER_COUNT 1
 
 ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, 16);
 
 u8 keyValues[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
-MusicChunk musicChunks[MAX_CHUNKS_AMOUNT] = {
-    { .time = 1, .len = 90, .key = PIANO_KEY_A, .octave = 0, .on = true },
-    { .time = 2, .len = 90, .key = PIANO_KEY_A, .octave = 0, .on = false },
-};
-u32 musicChunksLen  = 2;
+MusicChunk musicChunks[MAX_CHUNKS_AMOUNT] = { 0 };
+u32 musicChunksLen  = 0;
 u32 chunkIdx        = 0;
 u64 musicTime       = 0;
 u16 restTime        = 0;
@@ -48,6 +48,28 @@ void setup() {
     pinMode(3, OUTPUT); // sr clock pin
     pinMode(4, OUTPUT); // sr ST_CP pin
     sr.interrupt(ShiftRegisterPWM::UpdateFrequency::SuperFast);
+
+    musicChunks[0].time = 0;
+    musicChunks[0].velocity = 90;
+    musicChunks[0].key = PIANO_KEY_A;
+    musicChunks[0].octave = -16;
+    musicChunks[0].on = true;
+    musicChunks[1].time = 250;
+    musicChunks[1].velocity = 90;
+    musicChunks[1].key = PIANO_KEY_C;
+    musicChunks[1].octave = 16;
+    musicChunks[1].on = true;
+    musicChunks[2].time = 500;
+    musicChunks[2].velocity = 90;
+    musicChunks[2].key = PIANO_KEY_A;
+    musicChunks[2].octave = -16;
+    musicChunks[2].on = false;
+    musicChunks[3].time = 750;
+    musicChunks[3].velocity = 90;
+    musicChunks[3].key = PIANO_KEY_C;
+    musicChunks[3].octave = 16;
+    musicChunks[3].on = false;
+    musicChunksLen = 4;
 
     // initialize serial port
     Serial.begin(BAUD_RATE);
@@ -203,9 +225,13 @@ void loop() {
     if (isMusicPlaying) {
         // Check if music is done
         if (chunkIdx >= musicChunksLen) {
-            // to play in a loop: chunkIdx = 0;
-            // otherwise setting isMusicPlaying = false; might be worthwile
+          #ifdef LOOPING
+            chunkIdx  = 0;
+            musicTime = 0;
+            restTime  = 0;
+          #else
             isMusicPlaying = false;
+          #endif
             clearMotors();
             goto done;
         }
@@ -215,32 +241,19 @@ void loop() {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
             MusicChunk chunk = musicChunks[chunkIdx];
             int key = MID_OCTAVE_START_IDX + PIANO_KEY_AMOUNT*(int)chunk.octave + (int)chunk.key;
-            // Serial.print("Key: ");
-            // Serial.println(key);
             if (key < 0) key = (chunk.key < STARTING_KEY)*(PIANO_KEY_AMOUNT) + chunk.key - STARTING_KEY;
             else key = KEYS_AMOUNT + chunk.key - LAST_OCTAVE_LEN - (chunk.key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT;
-            Serial.print("Key: "); // @Bug
-            Serial.println(key);
-            Serial.println(KEYS_AMOUNT + chunk.key - LAST_OCTAVE_LEN - (chunk.key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT);
 
             if (activeKeysCount < MAX_KEYS_AT_ONCE) {
                 if      ( chunk.on && !keyValues[key]) activeKeysCount++;
                 else if (!chunk.on &&  keyValues[key]) activeKeysCount--;
-                keyValues[key] = chunk.on*AIL_LERP(chunk.len/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
+                keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
             }
-            
-            printKeyVals();
+
+            // printKeyVals();
             chunkIdx++;
         }
 
-        // @TODO: Adress motors using keyValues array
-        // Motor on PIN 5
-        // LED on PIN 2
-        // sr.set(1, 0);
-        // sr.set(0, 0);
-        for (u8 i = 0; i < 8; i++) sr.set(i, 185);
-
-      done:
         u64 elapsed = millis() - start;
         musicTime += elapsed/CLOCK_CYCLE_LEN;
         restTime  += elapsed%CLOCK_CYCLE_LEN;
@@ -249,4 +262,6 @@ void loop() {
             restTime -= CLOCK_CYCLE_LEN;
         }
     }
+done:
+    1+1; // @Cleanup just to allow breaking out of the if (isMusicPlaying)-block
 }
