@@ -17,7 +17,7 @@ typedef int8_t   i8;
 #define MIN_KEY_VAL 185 // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255 // Maximum value to set for a motor to move, if a key should be played
 #define CLOCK_CYCLE_LEN 1 // in milliseconds
-#define SHIFT_REGISTER_COUNT 1
+#define SHIFT_REGISTER_COUNT 11
 
 ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, 16);
 
@@ -47,7 +47,7 @@ void setup() {
     pinMode(2, OUTPUT); // sr data pin
     pinMode(3, OUTPUT); // sr clock pin
     pinMode(4, OUTPUT); // sr ST_CP pin
-    sr.interrupt(ShiftRegisterPWM::UpdateFrequency::SuperFast);
+    sr.interrupt(ShiftRegisterPWM::UpdateFrequency::VerySlow);
 
     musicChunks[0].time = 0;
     musicChunks[0].velocity = 90;
