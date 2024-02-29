@@ -2,6 +2,7 @@
 typedef uint64_t u64;
 typedef int8_t   i8;
 #include "common/common.h"
+#include "test.h"
 #include "ShiftRegisterPWM.h"
 
 // Comment this out to prevent looping the song
@@ -49,27 +50,7 @@ void setup() {
     pinMode(4, OUTPUT); // sr ST_CP pin
     sr.interrupt(ShiftRegisterPWM::UpdateFrequency::VerySlow);
 
-    musicChunks[0].time = 0;
-    musicChunks[0].velocity = 90;
-    musicChunks[0].key = PIANO_KEY_A;
-    musicChunks[0].octave = -16;
-    musicChunks[0].on = true;
-    musicChunks[1].time = 250;
-    musicChunks[1].velocity = 90;
-    musicChunks[1].key = PIANO_KEY_C;
-    musicChunks[1].octave = 16;
-    musicChunks[1].on = true;
-    musicChunks[2].time = 500;
-    musicChunks[2].velocity = 90;
-    musicChunks[2].key = PIANO_KEY_A;
-    musicChunks[2].octave = -16;
-    musicChunks[2].on = false;
-    musicChunks[3].time = 750;
-    musicChunks[3].velocity = 90;
-    musicChunks[3].key = PIANO_KEY_C;
-    musicChunks[3].octave = 16;
-    musicChunks[3].on = false;
-    musicChunksLen = 4;
+    musicChunksLen = set_music_chunks(musicChunks);
 
     // initialize serial port
     Serial.begin(BAUD_RATE);
