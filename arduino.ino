@@ -40,7 +40,6 @@
 // undefine for release
 #define DEBUG
 
-#define MSG_TIMEOUT 2000        // timeout for reading messages in milliseconds
 #define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
 #define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
 #define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
@@ -196,9 +195,10 @@ void loop() {
     // Play song
     ////////////////
     // Get Start-Time for calculating elapsed time each iteration
+    // Serial.println(F("Test"));
+    // Serial.flush();
     start = millis();
-    Serial.println(F("Test"));
-    
+
     // Set values for Shift-Registers
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
@@ -244,7 +244,7 @@ apply_cur_cmds:
         }
     }
 timer_update_done:
-
+    (void)rb;
     ////////////////
     // Communication
     ////////////////
@@ -334,32 +334,32 @@ timer_update_done:
     // If message was read completely
     if (!remaining_msg_size) {
         switch (msg_type) {
-            case CMSG_PING:
+            case CMSG_PING: {
                 send_msg(SMSG_PONG);
-                break;
-            case CMSG_PIDI:
+            } break;
+            case CMSG_PIDI: {
                 // @TODO: Check that received PIDI-index was expected (either last index +1 or 0)
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
                     music_timer = msg_data.new_time;
-                    memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
-                    swap_cmd_buffers();
-                    is_music_playing = true;
+                    // memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
+                    // swap_cmd_buffers();
+                    // is_music_playing = true;
                 }
                 send_msg(SMSG_SUCC);
-                break;
-            case CMSG_STOP:
-                is_music_playing = false;
+            } break;
+            case CMSG_STOP: {
+                // is_music_playing = false;
                 send_msg(SMSG_SUCC);
-                break;
-            case CMSG_CONT:
-                is_music_playing = true;
+            } break;
+            case CMSG_CONT: {
+                // is_music_playing = true;
                 send_msg(SMSG_SUCC);
-                break;
+            } break;
             case CMSG_LOUD:
-            case CMSG_SPED:
+            case CMSG_SPED: {
                 send_msg(SMSG_SUCC);
-                break;
+            } break;
             case CMSG_NONE:
                 break;
         }
