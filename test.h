@@ -16,8 +16,22 @@ u32 set_music_chunks(MusicChunk *chunks)
     //               -3 and 3 should correspond to the first full octaves on the piano.
     //               A piano does have keys in the partially covered octaves -4 and 4 though)
     // - the velocity to play this with (any number between 0 and 255) (don't set anything here in `stop_note()`)
-    play_note(chunks, &len, 0, PIANO_KEY_A, -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_A, -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_A,  -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_A,  -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_AS, -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_AS, -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_B,  -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_B,  -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_C,  -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_C,  -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_CS, -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_CS, -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_D,  -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_D,  -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_DS, -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_DS, -16);
+    play_note(chunks, &len, 0,   PIANO_KEY_E,  -16, 255);
+    stop_note(chunks, &len, 500, PIANO_KEY_E,  -16);
 
     sort(chunks, len);
 	  return len;
