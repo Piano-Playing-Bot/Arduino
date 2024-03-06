@@ -1,6 +1,7 @@
 #include <stdint.h>
 typedef uint64_t u64;
 typedef int8_t   i8;
+typedef int16_t  i16;
 #include "common/common.h"
 #include "test.h"
 #include "ShiftRegisterPWM.h"
@@ -24,7 +25,7 @@ ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, 16);
 
 u8 keyValues[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
 MusicChunk musicChunks[MAX_CHUNKS_AMOUNT] = { 0 };
-u32 musicChunksLen  = 0;
+u8  musicChunksLen  = 0;
 u32 chunkIdx        = 0;
 u64 musicTime       = 0;
 u16 restTime        = 0;
@@ -42,6 +43,17 @@ ClientMsgType msgType = MSG_NONE;
 u32 remainingLen      = 0;
 u32 jumpTime          = 0;
 
+static inline u8 get_key(MusicChunk chunk)
+{
+    i16 key = MID_OCTAVE_START_IDX + PIANO_KEY_AMOUNT*(i16)chunk.octave + (i16)chunk.key;
+    if (key < 0) key = (chunk.key < STARTING_KEY)*(PIANO_KEY_AMOUNT) + chunk.key - STARTING_KEY;
+    else if (key >= KEYS_AMOUNT) key = KEYS_AMOUNT + chunk.key - LAST_OCTAVE_LEN - (chunk.key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT;
+    // AIL_ASSERT(key >= 0);
+    // AIL_ASSERT(key < KEYS_AMOUNT);
+    // AIL_STATIC_ASSERT(KEYS_AMOUNT <= UINT8_MAX);
+    return (u8) key;
+}
+
 void setup() {
     pinMode(LED_BUILTIN, OUTPUT); // @Cleanup for debugging only
 
@@ -58,6 +70,16 @@ void setup() {
       ; // wait for serial port to connect. Needed for native USB port only
     }
     Serial.print("\n");
+    for (u8 i = 0; i < musicChunksLen; i++) {
+        Serial.print(i);
+        Serial.print(".: ");
+        Serial.print(musicChunks[i].octave);
+        Serial.print(", ");
+        Serial.print(musicChunks[i].key);
+        Serial.print(", ");
+        Serial.print(get_key(musicChunks[i]));
+        Serial.print("\n");
+    }
 }
 
 void printKeyVals()
@@ -149,7 +171,7 @@ void loop() {
             switch (msgType) {
                 case MSG_PIDI: {
                     u32 n = (msgBuffer.len - msgBuffer.idx)/ENCODED_MUSIC_CHUNK_LEN;
-                    for (u32 i = 0; i < n; i++) {
+                    for (u8 i = 0; i < n; i++) {
                         musicChunks[musicChunksLen++] = decode_chunk(&msgBuffer);
                     }
                     remainingLen -= n*ENCODED_MUSIC_CHUNK_LEN;
@@ -190,7 +212,7 @@ void loop() {
                 clearMotors();
                 Serial.print("Jumping to time: ");
                 Serial.println(jumpTime);
-                for (u32 i = 0; i < musicChunksLen && musicChunks[i].time <= jumpTime; i++) {
+                for (u8 i = 0; i < musicChunksLen && musicChunks[i].time <= jumpTime; i++) {
                     print_chunk(musicChunks[i]);
                     // @TODO: Apply Chunk
                 }
@@ -221,15 +243,14 @@ void loop() {
         while (chunkIdx < musicChunksLen && musicChunks[chunkIdx].time <= musicTime) {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
             MusicChunk chunk = musicChunks[chunkIdx];
-            int key = MID_OCTAVE_START_IDX + PIANO_KEY_AMOUNT*(int)chunk.octave + (int)chunk.key;
-            if (key < 0) key = (chunk.key < STARTING_KEY)*(PIANO_KEY_AMOUNT) + chunk.key - STARTING_KEY;
-            else key = KEYS_AMOUNT + chunk.key - LAST_OCTAVE_LEN - (chunk.key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT;
+            u8 key = get_key(chunk);
+            keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
 
-            if (activeKeysCount < MAX_KEYS_AT_ONCE) {
-                if      ( chunk.on && !keyValues[key]) activeKeysCount++;
-                else if (!chunk.on &&  keyValues[key]) activeKeysCount--;
-                keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
-            }
+            // if (activeKeysCount < MAX_KEYS_AT_ONCE) {
+            //     if      ( chunk.on && !keyValues[key]) activeKeysCount++;
+            //     else if (!chunk.on &&  keyValues[key]) activeKeysCount--;
+            //     keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
+            // }
 
             // printKeyVals();
             chunkIdx++;

@@ -1,10 +1,10 @@
-void play_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave, u8 velocity);
-void stop_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave);
-void sort(MusicChunk *chunks, u32 len);
+static inline void play_note(MusicChunk *chunks, u8 *len, u64 time, u8 key, i8 octave, u8 velocity);
+static inline void stop_note(MusicChunk *chunks, u8 *len, u64 time, u8 key, i8 octave);
+static inline void sort(MusicChunk *chunks, u32 len);
 
-u32 set_music_chunks(MusicChunk *chunks)
+u8 set_music_chunks(MusicChunk *chunks)
 {
-    u32 len = 0;
+    u8 len = 0;
     
     // Note: Play/Stop more notes in any order here to test whatever you wanna test
     // Arguments are:
@@ -16,28 +16,19 @@ u32 set_music_chunks(MusicChunk *chunks)
     //               -3 and 3 should correspond to the first full octaves on the piano.
     //               A piano does have keys in the partially covered octaves -4 and 4 though)
     // - the velocity to play this with (any number between 0 and 255) (don't set anything here in `stop_note()`)
-    play_note(chunks, &len, 0,   PIANO_KEY_A,  -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_A,  -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_AS, -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_AS, -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_B,  -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_B,  -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_C,  -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_C,  -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_CS, -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_CS, -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_D,  -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_D,  -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_DS, -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_DS, -16);
-    play_note(chunks, &len, 0,   PIANO_KEY_E,  -16, 255);
-    stop_note(chunks, &len, 500, PIANO_KEY_E,  -16);
+
+    for (i8 i = 0; i < 4; i++) {
+      for (u8 j = 0; j < PIANO_KEY_AMOUNT; j++) {
+        // Hier ist jetzt die Oktave i und der Key j
+        play_note(chunks, &len, 0, j, i, 255);
+      }
+    } 
 
     sort(chunks, len);
 	  return len;
 }
 
-void play_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave, u8 velocity) {
+static inline void play_note(MusicChunk *chunks, u8 *len, u64 time, u8 key, i8 octave, u8 velocity) {
     chunks[*len].time = time;
     chunks[*len].velocity = velocity;
     chunks[*len].key = key;
@@ -46,7 +37,7 @@ void play_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave, u8 vel
     *len += 1;
 }
 
-void stop_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave) {
+static inline void stop_note(MusicChunk *chunks, u8 *len, u64 time, u8 key, i8 octave) {
     chunks[*len].time = time;
     chunks[*len].velocity = 0;
     chunks[*len].key = key;
@@ -55,7 +46,7 @@ void stop_note(MusicChunk *chunks, u32 *len, u64 time, u8 key, i8 octave) {
     *len += 1;
 }
 
-void sort(MusicChunk *chunks, u32 len) {
+static inline void sort(MusicChunk *chunks, u32 len) {
     for (u32 i = 0; i < len - 1; i++) {
         u32 min = i;
         for (u32 j = i + 1; j < len; j++) {
