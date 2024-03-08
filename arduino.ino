@@ -22,7 +22,6 @@
 
 // @TODO: Test code
 // @TODO: REQP messages do not provide the 4 bytes for indicating the expected index atm. Either this code or the Protocol should be updated to be consistent
-// @TODO: Messages should be discarded, if no new bytes were received after a given timeout, to make the protocol more robust
 // @Performance: If we stay with max-speed at 1ms, we don't need a restTimer variable and simplify elapsed-time calculations
 // @Performance: Instead of using the ShitRegisterPWM library, we can copy the relevant parts of it and thus hardcode them
 // most importantly we could just send the values from the piano-array to the shift-registers directly without copying them into the library's internal "data" array first
@@ -92,6 +91,7 @@ u32 res;
 u8 print_piano_idx;
 u8 clear_piano_idx;
 u8 reply[12];
+u8 encoded_cmd[ENCODED_CMD_LEN];
 
 
 // @Cleanup: To check amount of free RAM during development
@@ -200,15 +200,19 @@ void loop() {
     start = millis();
 
     // Set values for Shift-Registers
+    // piano[0] = 255;
+    // is_music_playing = true;
+    bool any = false;
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
           sr.set(i, AIL_LERP(piano[i]*speed_factor/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL));
+          any |= piano[i] > 0;
       }
     } else {
       for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
     #if 0
-        if (is_music_playing && piano[0]) digitalWrite(LED_BUILTIN, HIGH);
+        if (is_music_playing && any) digitalWrite(LED_BUILTIN, HIGH);
         else digitalWrite(LED_BUILTIN, LOW);
     #endif
 
@@ -218,7 +222,7 @@ apply_cur_cmds:
         while (cmd_idx < cur_cmds_count && cur_cmds[cmd_idx].time <= music_timer) {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
             apply_pidi_cmd(piano, cur_cmds, cmd_idx, cur_cmds_count, &active_keys_count);
-            #ifdef DEBUG
+            #if 0
                 print_piano();
             #endif
             cmd_idx++;
@@ -244,7 +248,6 @@ apply_cur_cmds:
         }
     }
 timer_update_done:
-    (void)rb;
     ////////////////
     // Communication
     ////////////////
@@ -303,13 +306,12 @@ timer_update_done:
                     remaining_msg_size -= KEYS_AMOUNT;
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
-                    u32 n = rb_len(rb)/ENCODED_MUSIC_CHUNK_LEN;
-                    for (u32 i = 0; i < n; i++) {
-                        u8 encoded_cmd[ENCODED_MUSIC_CHUNK_LEN]; // @TODO: Make var global
-                        rb_readn(&rb, ENCODED_MUSIC_CHUNK_LEN, encoded_cmd);
+                    n = rb_len(rb)/ENCODED_CMD_LEN;
+                    for (i = 0; i < n; i++) {
+                        rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
                     }
-                    remaining_msg_size -= n*ENCODED_MUSIC_CHUNK_LEN - (remaining_msg_size%ENCODED_MUSIC_CHUNK_LEN); // subtract any modulo rests, to make sure we always finish reading the message
+                    remaining_msg_size -= n*ENCODED_CMD_LEN - (remaining_msg_size%ENCODED_CMD_LEN); // subtract any modulo rests, to make sure we always finish reading the message
                 }
             } break;
             case CMSG_LOUD: {
@@ -342,18 +344,18 @@ timer_update_done:
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
                     music_timer = msg_data.new_time;
-                    // memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
-                    // swap_cmd_buffers();
-                    // is_music_playing = true;
+                    memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
+                    swap_cmd_buffers();
+                    is_music_playing = true;
                 }
                 send_msg(SMSG_SUCC);
             } break;
             case CMSG_STOP: {
-                // is_music_playing = false;
+                is_music_playing = false;
                 send_msg(SMSG_SUCC);
             } break;
             case CMSG_CONT: {
-                // is_music_playing = true;
+                is_music_playing = true;
                 send_msg(SMSG_SUCC);
             } break;
             case CMSG_LOUD:
