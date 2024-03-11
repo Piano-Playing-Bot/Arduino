@@ -88,7 +88,7 @@ u32 buffer_size;
 bool correct_magic;
 u32 n;
 u32 res;
-u8 print_piano_idx;
+u16 print_idx;
 u8 clear_piano_idx;
 u8 reply[12];
 u8 encoded_cmd[ENCODED_CMD_LEN];
@@ -110,13 +110,45 @@ int freeRam() {
 // @Cleanup: Only required for debugging whether the values get set correctly in the piano
 void print_piano()
 {
-    Serial.print(F("["));
+    Serial.print(F("Piano: ["));
     Serial.print(piano[0], DEC);
-    for (print_piano_idx = 1; print_piano_idx < KEYS_AMOUNT; print_piano_idx++) {
+    for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
         Serial.print(F(", "));
         Serial.print(piano[i]);
     }
     Serial.print(F("]\n"));
+}
+
+void print_single_cmd(PidiCmd c)
+{
+    static const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    Serial.print(F("{ key: "));
+    Serial.print(key_strs[c.key]);
+    Serial.print(F(", octave: "));
+    Serial.print(c.octave);
+    Serial.print(F(", on: "));
+    Serial.print(c.on ? F("true") : F("false"));
+    Serial.print(F(", time: "));
+    Serial.print((u32)c.time);
+    Serial.print(F(", velocity: "));
+    Serial.print(c.velocity);
+    Serial.print(F(" }"));
+}
+
+void print_cmds()
+{
+    Serial.print(F("Commands ("));
+    Serial.print(cur_cmds_count);
+    Serial.print(F(") ["));
+    if (cur_cmds_count > 0) {
+        Serial.print(F("\n    "));
+        print_single_cmd(cur_cmds[0]);
+        for (print_idx = 1; print_idx < cur_cmds_count; print_idx++) {
+            Serial.print(F(",\n    "));
+            print_single_cmd(cur_cmds[print_idx]);
+        }
+    }
+    Serial.print(F("\n]\n"));
 }
 
 // Memset piano array to 0
@@ -200,19 +232,15 @@ void loop() {
     start = millis();
 
     // Set values for Shift-Registers
-    // piano[0] = 255;
-    // is_music_playing = true;
-    bool any = false;
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
           sr.set(i, AIL_LERP(piano[i]*speed_factor/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL));
-          any |= piano[i] > 0;
       }
     } else {
       for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-    #if 0
-        if (is_music_playing && any) digitalWrite(LED_BUILTIN, HIGH);
+    #if 1
+        if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) digitalWrite(LED_BUILTIN, HIGH);
         else digitalWrite(LED_BUILTIN, LOW);
     #endif
 
@@ -291,6 +319,8 @@ timer_update_done:
                     msg_data.parts_read++;
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
                     else remaining_msg_size -= 4;
+                    Serial.print(F("PIDI Index: "));
+                    Serial.pritnln(msg_data.chunk_index);
                 }
                 // Time: 8 bytes
                 if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && rb_len(rb) >= 8) {
@@ -298,6 +328,8 @@ timer_update_done:
                     msg_data.parts_read++;
                     if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
                     remaining_msg_size -= 8;
+                    Serial.print(F("PIDI Time: "));
+                    Serial.pritnln(msg_data.new_time);
                 }
                 if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
                     AIL_STATIC_ASSERT(KEYS_AMOUNT < RING_BUFFER_SIZE);
@@ -347,6 +379,8 @@ timer_update_done:
                     memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
                     swap_cmd_buffers();
                     is_music_playing = true;
+                    print_piano();
+                    print_cmds();
                 }
                 send_msg(SMSG_SUCC);
             } break;
