@@ -68,7 +68,6 @@ u16 rest_timer        = 0;
 u8  active_keys_count = 0;
 bool is_music_playing   = false;
 bool request_next_chunk = false;
-bool started_overwriting_next_cmds = false;
 RingBuffer rb = {0};
 
 f32 volume_factor = 1.0f;
@@ -195,12 +194,15 @@ static inline void send_msg(ServerMsgType type) {
 }
 
 static inline void swap_cmd_buffers() {
-    send_msg(SMSG_REQP);
-    request_next_chunk = true;
     cmd_idx = 0;
     cur_cmds_count = 0; // Clearing cur_cmds without having to memset anything
     AIL_SWAP_PORTABLE(u32, cur_cmds_count, next_cmds_count);
     AIL_SWAP_PORTABLE(PidiCmd*, cur_cmds, next_cmds);
+    request_next_chunk = cur_cmds_count > 0;
+#if DEBUG_CONN
+    Serial.println(F("Swapped Buffers..."));
+    print_cmds();
+#endif
 }
 
 // Set up I/O pins and interrupt for setting values in Shift-Registers
@@ -285,10 +287,6 @@ timer_update_done:
         remaining_msg_size = 0;
         rb.start = 0;
         rb.end   = 0;
-        if (started_overwriting_next_cmds) {
-            next_cmds_count = 0;
-            request_next_chunk = cur_cmds_count > 0;
-        }
     }
     toRead = Serial.available();
     if (toRead) {
@@ -304,6 +302,7 @@ timer_update_done:
         if (rb_len(rb) >= 12) {
             rb_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
             msg_type = rb_read4msb(&rb);
+            msg_data.parts_read = 0;
             remaining_msg_size = rb_read4lsb(&rb);
             if (remaining_msg_size > MAX_CLIENT_MSG_SIZE) remaining_msg_size = 0;
         }
@@ -315,12 +314,16 @@ timer_update_done:
             case CMSG_PIDI: {
                 // Index: 4 bytes
                 if (msg_data.parts_read == 0 && rb_len(rb) >= 4) {
+                    next_cmds_count = 0;
+                    request_next_chunk = cur_cmds_count > 0;
                     msg_data.chunk_index = rb_read4lsb(&rb);
                     msg_data.parts_read++;
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
                     else remaining_msg_size -= 4;
+#if DEBUG_CONN
                     Serial.print(F("PIDI Index: "));
-                    Serial.pritnln(msg_data.chunk_index);
+                    Serial.println(msg_data.chunk_index);
+#endif
                 }
                 // Time: 8 bytes
                 if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && rb_len(rb) >= 8) {
@@ -328,20 +331,37 @@ timer_update_done:
                     msg_data.parts_read++;
                     if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
                     remaining_msg_size -= 8;
+#if DEBUG_CONN
                     Serial.print(F("PIDI Time: "));
-                    Serial.pritnln(msg_data.new_time);
+                    Serial.println((u32)msg_data.new_time);
+#endif
                 }
                 if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
                     AIL_STATIC_ASSERT(KEYS_AMOUNT < RING_BUFFER_SIZE);
                     rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
                     msg_data.parts_read++;
                     remaining_msg_size -= KEYS_AMOUNT;
+                    // Serial.println(F("Read piano"));
+                    // Serial.print(F("Remaining msg size: "));
+                    // Serial.println(remaining_msg_size);
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
-                    n = rb_len(rb)/ENCODED_CMD_LEN;
+                    n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
+                    // Serial.print(F("rb_len: "));
+                    // Serial.print(rb_len(rb));
+                    // Serial.print(", n: ");
+                    // Serial.println(n);
                     for (i = 0; i < n; i++) {
                         rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
+#if DEBUG_CONN
+                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { Serial.print(encoded_cmd[idx]); Serial.print(F(" ")); }
+                        Serial.print(F(" -> "));
+#endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
+#if DEBUG_CONN
+                        print_single_cmd(next_cmds[next_cmds_count - 1]);
+                        Serial.print(F("\n"));
+#endif
                     }
                     remaining_msg_size -= n*ENCODED_CMD_LEN - (remaining_msg_size%ENCODED_CMD_LEN); // subtract any modulo rests, to make sure we always finish reading the message
                 }
@@ -379,8 +399,7 @@ timer_update_done:
                     memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
                     swap_cmd_buffers();
                     is_music_playing = true;
-                    print_piano();
-                    print_cmds();
+                    // print_piano();
                 }
                 send_msg(SMSG_SUCC);
             } break;
@@ -399,7 +418,7 @@ timer_update_done:
             case CMSG_NONE:
                 break;
         }
-        if (request_next_chunk) {
+        if (request_next_chunk && next_cmds_count == 0) {
             send_msg(SMSG_REQP);
         }
         msg_type = CMSG_NONE;
