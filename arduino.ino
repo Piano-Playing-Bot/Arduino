@@ -1,269 +1,452 @@
-#include <stdint.h>
-typedef uint64_t u64;
-typedef int8_t   i8;
-typedef int16_t  i16;
-#include "common/common.h"
-#include "test.h"
+#define CONST_VAR PROGMEM
+
+#include "header.h"
+#include "ring_buffer.h"
 #include "ShiftRegisterPWM.h"
+#include "test.h"
 
-// Comment this out to prevent looping the song
-#define LOOPING
+////////////////
+// General Overview
+////////////////
+// After setting up the I/O pins and interrupts for adressing the shift-registers correctly in setup(), we do the following steps repeatedly in a loop:
+// 1. Update the array "piano". This holds the velocity with which to play each key on the piano
+    // If the song is paused, zeros are sent instead
+// 2. Look through commands to update the "piano" array
+    // To check whether a command should be applied, we use a timer, tracking the time in ms since the start of the song
+    // To allow streaming commands (and thus circumvent the Arduino's small memory) we use two buffers (cur_cmds, next_cmds), that are swapped once the cur_cmds buffer was completely applied
+    // Update internal timer for tracking elapsed ms since song start only if some music is playing and further cmds are queued up
+// 3. Read messages
+    // Load any received bytes into a static buffer, to prevent losing it when the I/O buffers are overwritten
+    // Check if these bytes indicate the start of a SPPP message (if none has been started yet)
+    // If a message has been starting to be read, continue reading bytes for it, building up the message data
+    // When the message was parsed completely, react to it accordingly
 
-#define MSG_BUFFER_CAP 128
-#define KEYS_AMOUNT 88 // Amount of keys on the piano
-#define STARTING_KEY PIANO_KEY_A
-#define FULL_OCTAVES_AMOUNT ((88 - (PIANO_KEY_AMOUNT - STARTING_KEY))/PIANO_KEY_AMOUNT)
-#define LAST_OCTAVE_LEN (KEYS_AMOUNT - (FULL_OCTAVES_AMOUNT*PIANO_KEY_AMOUNT + (PIANO_KEY_AMOUNT - STARTING_KEY)))
-#define MID_OCTAVE_START_IDX ((PIANO_KEY_AMOUNT - STARTING_KEY) + PIANO_KEY_AMOUNT*(FULL_OCTAVES_AMOUNT/2))
-#define MAX_KEYS_AT_ONCE 10 // The maximum amount of keys to play at once
-#define MIN_KEY_VAL 185 // Minimum value to set for a motor to move, if a key should be played
-#define MAX_KEY_VAL 255 // Maximum value to set for a motor to move, if a key should be played
-#define CLOCK_CYCLE_LEN 1 // in milliseconds
-#define SHIFT_REGISTER_COUNT 11
+// @TODO: Test code
+// @TODO: REQP messages do not provide the 4 bytes for indicating the expected index atm. Either this code or the Protocol should be updated to be consistent
+// @Performance: If we stay with max-speed at 1ms, we don't need a restTimer variable and simplify elapsed-time calculations
+// @Performance: Instead of using the ShitRegisterPWM library, we can copy the relevant parts of it and thus hardcode them
+// most importantly we could just send the values from the piano-array to the shift-registers directly without copying them into the library's internal "data" array first
+// @Performance: General optimizations can be made, like loop-unrolling, branchless-programming, etc.
 
-ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, 16);
+// Naming Conventions
+// `piano` is the array of 88 values that represents the PWM value that should be sent to each key on the piano respectively (currently called `piano`)
+// A `command` is a single struct saying after how many ms a piano key should start/end playing (currently called `MusicChunk`)
+// A `message` is a message as defined by the SPPProtocol - see its specification in common/ for more infos
+// 'cur' == 'current'
+// 'cmd' == 'command'
+// 'msg' == 'message'
+// 'buf' == 'buffer'
 
-u8 keyValues[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
-MusicChunk musicChunks[MAX_CHUNKS_AMOUNT] = { 0 };
-u8  musicChunksLen  = 0;
-u32 chunkIdx        = 0;
-u64 musicTime       = 0;
-u16 restTime        = 0;
-u8  activeKeysCount = 0;
-bool isMusicPlaying = true;
+// undefine for release
+#define DEBUG
+#define DEBUG_CONN 1
 
-u8 msgBufferData[MSG_BUFFER_CAP] = {0};
-AIL_Buffer msgBuffer = {
-    .data = msgBufferData,
-    .idx  = 0,
-    .len  = 0,
-    .cap  = MSG_BUFFER_CAP,
-};
-ClientMsgType msgType = MSG_NONE;
-u32 remainingLen      = 0;
-u32 jumpTime          = 0;
+#define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
+#define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
+#define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
+#define MIN_KEY_VAL 185          // Minimum value to set for a motor to move, if a key should be played
+#define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
 
-static inline u8 get_key(MusicChunk chunk)
+typedef struct {
+    u32 chunk_index; // Index of the chunk as given by the message
+    u32 parts_read;  // Amount of parts read of the PIDI message
+    u64 new_time;    // New time to start playing at
+    u8  new_piano[KEYS_AMOUNT]; // New starting piano PWM values
+} MsgData;
+
+ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, PWM_RESOLUTION);
+
+u8 piano[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
+
+PidiCmd cmds_buf1[CMDS_LIST_LEN]  = { 0 };
+PidiCmd cmds_buf2[CMDS_LIST_LEN] = { 0 };
+PidiCmd *cur_cmds  = cmds_buf1;
+PidiCmd *next_cmds = cmds_buf2;
+u32 cur_cmds_count    = 0;
+u32 next_cmds_count   = 0;
+u32 cmd_idx           = 0;
+u64 music_timer       = 0;
+u16 rest_timer        = 0;
+u8  active_keys_count = 0;
+bool is_music_playing   = false;
+bool request_next_chunk = false;
+RingBuffer rb = {0};
+
+f32 volume_factor = 1.0f;
+f32 speed_factor  = 1.0f;
+
+ClientMsgType msg_type = CMSG_NONE; // Type of currently parsed message
+u32 remaining_msg_size = 0;        // in bytes
+MsgData msg_data       = { 0 };    // Data provided in the message (aside from the actual list of commands)
+
+// Logically local variables, put in global scope, so that the Arduino IDE can correctly report used memory
+u32 msg_start_time; // For message timeout
+u64 start;
+u32 i;
+u64 elapsed;
+u32 toRead;
+u32 buffer_size;
+bool correct_magic;
+u32 n;
+u32 res;
+u16 print_idx;
+u8 clear_piano_idx;
+u8 reply[12];
+u8 encoded_cmd[ENCODED_CMD_LEN];
+
+
+// @Cleanup: To check amount of free RAM during development
+void display_freeram() {
+  Serial.print(F("- SRAM left: "));
+  Serial.println(freeRam());
+  Serial.flush();
+}
+
+int freeRam() {
+  extern int __heap_start,*__brkval;
+  int v;
+  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int) __brkval);
+}
+
+// @Cleanup: Only required for debugging whether the values get set correctly in the piano
+void print_piano()
 {
-    i16 key = MID_OCTAVE_START_IDX + PIANO_KEY_AMOUNT*(i16)chunk.octave + (i16)chunk.key;
-    if (key < 0) key = (chunk.key < STARTING_KEY)*(PIANO_KEY_AMOUNT) + chunk.key - STARTING_KEY;
-    else if (key >= KEYS_AMOUNT) key = KEYS_AMOUNT + chunk.key - LAST_OCTAVE_LEN - (chunk.key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT;
-    // AIL_ASSERT(key >= 0);
-    // AIL_ASSERT(key < KEYS_AMOUNT);
-    // AIL_STATIC_ASSERT(KEYS_AMOUNT <= UINT8_MAX);
-    return (u8) key;
+    Serial.print(F("Piano: ["));
+    Serial.print(piano[0], DEC);
+    for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
+        Serial.print(F(", "));
+        Serial.print(piano[print_idx]);
+    }
+    Serial.print(F("]\n"));
 }
 
-void setup() {
-    pinMode(LED_BUILTIN, OUTPUT); // @Cleanup for debugging only
-
-    pinMode(2, OUTPUT); // sr data pin
-    pinMode(3, OUTPUT); // sr clock pin
-    pinMode(4, OUTPUT); // sr ST_CP pin
-    sr.interrupt(ShiftRegisterPWM::UpdateFrequency::VerySlow);
-
-    musicChunksLen = set_music_chunks(musicChunks);
-
-    // initialize serial port
-    Serial.begin(BAUD_RATE);
-    while (!Serial) {
-      ; // wait for serial port to connect. Needed for native USB port only
-    }
-    Serial.print("\n");
-    for (u8 i = 0; i < musicChunksLen; i++) {
-        Serial.print(i);
-        Serial.print(".: ");
-        Serial.print(musicChunks[i].octave);
-        Serial.print(", ");
-        Serial.print(musicChunks[i].key);
-        Serial.print(", ");
-        Serial.print(get_key(musicChunks[i]));
-        Serial.print("\n");
-    }
-}
-
-void printKeyVals()
+void print_single_cmd(PidiCmd c)
 {
-    Serial.print("[");
-    Serial.print(keyValues[0], DEC);
-    for (u8 i = 1; i < KEYS_AMOUNT; i++) {
-        Serial.print(", ");
-        Serial.print(keyValues[i]);
+    static const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    Serial.print(F("{ key: "));
+    Serial.print(key_strs[c.key]);
+    Serial.print(F(", octave: "));
+    Serial.print(c.octave);
+    Serial.print(F(", on: "));
+    Serial.print(c.on ? F("true") : F("false"));
+    Serial.print(F(", time: "));
+    Serial.print((u32)c.time);
+    Serial.print(F(", velocity: "));
+    Serial.print(c.velocity);
+    Serial.print(F(" }"));
+}
+
+void print_cmds()
+{
+    Serial.print(F("Commands ("));
+    Serial.print(cur_cmds_count);
+    Serial.print(F(") ["));
+    if (cur_cmds_count > 0) {
+        Serial.print(F("\n    "));
+        print_single_cmd(cur_cmds[0]);
+        for (print_idx = 1; print_idx < cur_cmds_count; print_idx++) {
+            Serial.print(F(",\n    "));
+            print_single_cmd(cur_cmds[print_idx]);
+        }
     }
-    Serial.print("]\n");
+    Serial.print(F("\n]\n"));
 }
 
-void setPlaying(bool val) {
-    isMusicPlaying = val;
-}
-
-void clearMotors() {
+// Memset piano array to 0
+void clear_piano() {
+    // Optimized to set 8 bytes at once
+    // @Performance: Further optimization would manually unroll loop & inline function
     AIL_STATIC_ASSERT(KEYS_AMOUNT < UINT8_MAX);
     AIL_STATIC_ASSERT(KEYS_AMOUNT % sizeof(u64) == 0);
-    for (u8 i = 0; i < KEYS_AMOUNT/sizeof(u64); i++) {
-        ((u64 *)keyValues)[i] = (u64)0;
+    for (clear_piano_idx = 0; clear_piano_idx < KEYS_AMOUNT/sizeof(u64); clear_piano_idx++) {
+        ((u64 *)piano)[clear_piano_idx] = (u64)0;
     }
-    // for (u8 i = 0; i < KEYS_AMOUNT; i++) {
-    //     keyValues[i] = 0;
+    // for (clear_piano_idx = 0; clear_piano_idx < KEYS_AMOUNT; clear_piano_idx++) {
+    //     piano[clear_piano_idx] = 0;
     // }
 }
 
-void writeMsg(ServerMsgType type) {
-    u8 reply[12];
-    AIL_Buffer replyBuffer;
-    replyBuffer.data = reply;
-    replyBuffer.idx  = 0;
-    replyBuffer.len  = 0;
-    replyBuffer.cap  = 12;
-    ail_buf_write4msb(&replyBuffer, SPPP_MAGIC);
-    ail_buf_write4msb(&replyBuffer, type);
-    ail_buf_write4lsb(&replyBuffer, 0);
-    Serial.write((u8 *)reply, 12);
+static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
+{
+    u8 rest = RING_BUFFER_SIZE - rb->end;
+    if (toRead < rest) {
+        rb->end += Serial.readBytes(&(rb->data[rb->end]), toRead);
+    } else {
+        Serial.readBytes(&(rb->data[rb->end]), rest);
+        rb->end = toRead - rest;
+        Serial.readBytes(rb->data, rb->end);
+    }
+}
+
+// Send a message back to the client
+static inline void send_msg(ServerMsgType type) {
+    // @Performance: Further optimization by manually inlining the Serial.write call maybe...
     Serial.flush();
+    reply[0] = 'S';
+    reply[1] = 'P';
+    reply[2] = 'P';
+    reply[3] = 'P';
+    reply[4] = (u8)(type >> 24);
+    reply[5] = (u8)(type >> 16);
+    reply[6] = (u8)(type >> 8);
+    reply[7] = (u8)type;
+    *(u32 *)(&reply[8]) = 0;
+    Serial.write(reply, 12);
+    Serial.flush(); // Very important for client to receive complete message
 }
 
-void clearPrevMsg() {
-    msgType = MSG_NONE;
-    msgBuffer.len -= msgBuffer.idx;
-    for (u32 i = 0; i < msgBuffer.len; i += sizeof(u64)) { // Basically unrolled memcpy
-        *(u64 *)(&msgBuffer.data[i]) = *(u64 *)(&msgBuffer.data[msgBuffer.idx + i]);
+static inline void swap_cmd_buffers() {
+    cmd_idx = 0;
+    cur_cmds_count = 0; // Clearing cur_cmds without having to memset anything
+    AIL_SWAP_PORTABLE(u32, cur_cmds_count, next_cmds_count);
+    AIL_SWAP_PORTABLE(PidiCmd*, cur_cmds, next_cmds);
+    request_next_chunk = cur_cmds_count > 0;
+#ifdef DEBUG
+    Serial.println(F("Swapped Buffers..."));
+    print_cmds();
+#endif
+}
+
+// Set up I/O pins and interrupt for setting values in Shift-Registers
+void setup() {
+    #ifdef DEBUG
+        pinMode(LED_BUILTIN, OUTPUT); // @Cleanup: to provide an LED for debugging
+    #endif
+    pinMode(2, OUTPUT); // sr data pin
+    pinMode(3, OUTPUT); // sr clock pin
+    pinMode(4, OUTPUT); // sr ST_CP/FLip-FLop/Latch pin
+    sr.interrupt(ShiftRegisterPWM::UpdateFrequency::VerySlow); // @TODO: Use custom frequency instead
+    Serial.begin(BAUD_RATE); // Initialize serial port
+    while (!Serial) {
+      ; // wait for serial port to connect. Needed for native USB port only
     }
-    msgBuffer.idx = 0;
+    #ifdef DEBUG
+        Serial.print(F("\n")); // @Cleanup: Only useful when monitoring output with the Arduino IDE's Serial Monitor
+    #endif
+
+    // cur_cmds_count = set_music_chunks(cur_cmds);
+    // for (u8 i = 0; i < KEYS_AMOUNT; i++) piano[i] = 255;
+    piano[1] = 255;
+    piano[2] = 255;
+    is_music_playing = true;
 }
 
+// Communicate with client, play song by updating shift-registers and following cmd buffers given by the client
 void loop() {
-    // Send song data to Shift registers
-    for (u32 i = 0; i < KEYS_AMOUNT; i++) {
-        sr.set(i, keyValues[i]);
+    // @TODO: speed_factor is not used yet
+    ////////////////
+    // Play song
+    ////////////////
+    // Get Start-Time for calculating elapsed time each iteration
+    // Serial.println(F("Test"));
+    // Serial.flush();
+    start = millis();
+
+    // Set values for Shift-Registers
+    if (is_music_playing) {
+      for (i = 0; i < KEYS_AMOUNT; i++) {
+          u8 x = piano[i];
+          if (x > 0) x = AIL_LERP(piano[i]/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
+          if (x > 0) {
+              Serial.print("i: ");
+              Serial.print(i);
+              Serial.print(", x: ");
+              Serial.println(x);
+          }
+          sr.set(i, x);
+      }
+    } else {
+        for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-    u64 start = millis();
+    #if 0
+        if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) digitalWrite(LED_BUILTIN, HIGH);
+        else digitalWrite(LED_BUILTIN, LOW);
+    #endif
 
-    // Reading Messages from the Client
-    // @TODO: Add Timeout mechanism for incomplete messages
-    {
-        u32 toRead = Serial.available();
-        if (toRead) {
-            msgBuffer.len += Serial.readBytes(&msgBuffer.data[msgBuffer.len], toRead);
-            // Serial.print("Message Buffer length: ");
-            // Serial.println((u32)(msgBuffer.len - msgBuffer.idx));
-            for (u32 i = msgBuffer.idx; i < msgBuffer.len; i++) {
-                // Serial.print((char)msgBuffer.data[i]);
-                // Serial.print(", ");
-            }
-            // Serial.print("\n");
-        }
-        // Enters this block only if a new message is starting to be read
-        if (!remainingLen) {
-            u32 bufferLen = msgBuffer.len - msgBuffer.idx;
-            bool correctMagic = false;
-            while (bufferLen >= 12 && !correctMagic) {
-                correctMagic = ail_buf_read4msb(&msgBuffer) == SPPP_MAGIC;
-                clearPrevMsg();
-            }
-            if (bufferLen >= 8 && correctMagic) {
-                msgType      = ail_buf_read4msb(&msgBuffer);
-                remainingLen = ail_buf_read4lsb(&msgBuffer);
-                if (msgType == MSG_PIDI) setPlaying(false); // Stop playing while reading the next song
-            }
-        }
-        // Enters this block only if a message has been started to be read
-        if (remainingLen) {
-            switch (msgType) {
-                case MSG_PIDI: {
-                    u32 n = (msgBuffer.len - msgBuffer.idx)/ENCODED_MUSIC_CHUNK_LEN;
-                    for (u8 i = 0; i < n; i++) {
-                        musicChunks[musicChunksLen++] = decode_chunk(&msgBuffer);
-                    }
-                    remainingLen -= n*ENCODED_MUSIC_CHUNK_LEN;
-                    AIL_ASSERT(remainingLen % ENCODED_MUSIC_CHUNK_LEN == 0);
-                } break;
-                case MSG_JUMP: {
-                    if (msgBuffer.len - msgBuffer.idx >= 8) {
-                        jumpTime = ail_buf_read8lsb(&msgBuffer);
-                        remainingLen = 0;
-                    }
-                } break;
-                default:
-                    remainingLen = 0;
-            }
-        }
-    }
-
-    // Reacting to parsed Message
-    if (!remainingLen) {
-        switch (msgType) {
-            case MSG_PING:
-                writeMsg(MSG_PONG);
-                break;
-            case MSG_PIDI:
-                clearMotors();
-                setPlaying(true);
-                writeMsg(MSG_SUCC);
-                break;
-            case MSG_STOP:
-                setPlaying(false);
-                writeMsg(MSG_SUCC);
-                break;
-            case MSG_CONT:
-                setPlaying(true);
-                writeMsg(MSG_SUCC);
-                break;
-            case MSG_JUMP:
-                clearMotors();
-                Serial.print("Jumping to time: ");
-                Serial.println(jumpTime);
-                for (u8 i = 0; i < musicChunksLen && musicChunks[i].time <= jumpTime; i++) {
-                    print_chunk(musicChunks[i]);
-                    // @TODO: Apply Chunk
-                }
-                writeMsg(MSG_SUCC);
-                break;
-            default: // do nothing
-                break;
-        }
-        msgType = MSG_NONE;
-    }
-
-    // Play Music
-    if (isMusicPlaying) {
-        // Check if music is done
-        if (chunkIdx >= musicChunksLen) {
-          #ifdef LOOPING
-            chunkIdx  = 0;
-            musicTime = 0;
-            restTime  = 0;
-          #else
-            isMusicPlaying = false;
-          #endif
-            clearMotors();
-            goto done;
-        }
-
-        // Update keyValues array
-        while (chunkIdx < musicChunksLen && musicChunks[chunkIdx].time <= musicTime) {
+    // Look through cur_cmds List for updates to piano-array
+    if (is_music_playing) {
+apply_cur_cmds:
+        while (cmd_idx < cur_cmds_count && cur_cmds[cmd_idx].time <= music_timer) {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
-            MusicChunk chunk = musicChunks[chunkIdx];
-            u8 key = get_key(chunk);
-            keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
-
-            // if (activeKeysCount < MAX_KEYS_AT_ONCE) {
-            //     if      ( chunk.on && !keyValues[key]) activeKeysCount++;
-            //     else if (!chunk.on &&  keyValues[key]) activeKeysCount--;
-            //     keyValues[key] = chunk.on*AIL_LERP(chunk.velocity/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
-            // }
-
-            // printKeyVals();
-            chunkIdx++;
+            apply_pidi_cmd(piano, cur_cmds, cmd_idx, cur_cmds_count, &active_keys_count);
+            #if 0
+                print_piano();
+            #endif
+            cmd_idx++;
         }
 
-        u64 elapsed = millis() - start;
-        musicTime += elapsed/CLOCK_CYCLE_LEN;
-        restTime  += elapsed%CLOCK_CYCLE_LEN;
-        if (restTime >= CLOCK_CYCLE_LEN) {
-            musicTime++;
-            restTime -= CLOCK_CYCLE_LEN;
+        // If cur_cmds is done (& next_cmds even has any cmds) -> swap cur_cmds & next_cmds
+        if (cmd_idx >= cur_cmds_count) {
+            if (next_cmds_count > 0) {
+                swap_cmd_buffers();
+                goto apply_cur_cmds;
+            } else {
+                goto timer_update_done; // Don't want to increase music timer, if no cmds can be applied
+            }
+        }
+
+        // Update timer
+        elapsed = millis() - start;
+        music_timer += elapsed/CLOCK_CYCLE_LEN;
+        rest_timer  += elapsed%CLOCK_CYCLE_LEN;
+        if (rest_timer >= CLOCK_CYCLE_LEN) {
+            music_timer++;
+            rest_timer -= CLOCK_CYCLE_LEN;
+        }
+        // Serial.print(F("\nElapsed Time: "));
+        // Serial.print((u32)elapsed);
+        // Serial.println(F("ms"));
+    }
+timer_update_done:
+    ////////////////
+    // Communication
+    ////////////////
+
+    // Buffer bytes from Serial port
+    if (start - msg_start_time > MSG_TIMEOUT) {
+        if (remaining_msg_size) Serial.println(F("Message timeout"));
+        remaining_msg_size = 0;
+        rb.start = 0;
+        rb.end   = 0;
+    }
+    toRead = Serial.available();
+    if (toRead) {
+        rb_get_from_serial(&rb, toRead);
+        msg_start_time = start;
+    }
+
+    // If starting to read a new message from the Client
+    if (!remaining_msg_size) {
+        while (rb_len(rb) >= 12 && rb_peek4msb(rb) != SPPP_MAGIC) {
+            rb_pop(&rb);
+        }
+        if (rb_len(rb) >= 12) {
+            rb_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
+            msg_type = rb_read4msb(&rb);
+            msg_data.parts_read = 0;
+            remaining_msg_size = rb_read4lsb(&rb);
+            if (remaining_msg_size > MAX_CLIENT_MSG_SIZE) remaining_msg_size = 0;
         }
     }
-done:
-    1+1; // @Cleanup just to allow breaking out of the if (isMusicPlaying)-block
+
+    // If message was started to be parsed
+    if (remaining_msg_size) {
+        switch (msg_type) {
+            case CMSG_PIDI: {
+                // Index: 4 bytes
+                if (msg_data.parts_read == 0 && rb_len(rb) >= 4) {
+                    next_cmds_count = 0;
+                    // request_next_chunk = cur_cmds_count > 0;
+                    msg_data.chunk_index = rb_read4lsb(&rb);
+                    msg_data.parts_read++;
+                    if (remaining_msg_size < 4) remaining_msg_size = 0;
+                    else remaining_msg_size -= 4;
+#if DEBUG_CONN
+                    Serial.print(F("PIDI Index: "));
+                    Serial.println(msg_data.chunk_index);
+                    Serial.print(F("Remaining msg size: "));
+                    Serial.println(remaining_msg_size);
+#endif
+                }
+                // Time: 8 bytes
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && rb_len(rb) >= 8) {
+                    msg_data.new_time = rb_read8lsb(&rb);
+                    msg_data.parts_read++;
+                    if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
+                    remaining_msg_size -= 8;
+#if DEBUG_CONN
+                    Serial.print(F("PIDI Time: "));
+                    Serial.println((u32)msg_data.new_time);
+#endif
+                }
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
+                    AIL_STATIC_ASSERT(KEYS_AMOUNT < RING_BUFFER_SIZE);
+                    rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
+                    msg_data.parts_read++;
+                    remaining_msg_size -= KEYS_AMOUNT;
+                    Serial.println(F("Read piano"));
+                }
+                if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
+                    n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
+                    // Serial.print(F("rb_len: "));
+                    // Serial.print(rb_len(rb));
+                    // Serial.print(", n: ");
+                    if (n > 0) {
+                        Serial.print(F("n: "));
+                        Serial.println(n);
+                    }
+                    for (i = 0; i < n; i++) {
+                        rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
+#if DEBUG_CONN
+                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { Serial.print(encoded_cmd[idx]); Serial.print(F(" ")); }
+                        Serial.print(F(" -> "));
+#endif
+                        next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
+#if DEBUG_CONN
+                        print_single_cmd(next_cmds[next_cmds_count - 1]);
+                        Serial.print(F("\n"));
+#endif
+                    }
+                    remaining_msg_size -= n*ENCODED_CMD_LEN - (remaining_msg_size%ENCODED_CMD_LEN); // subtract any modulo rests, to make sure we always finish reading the message
+                }
+            } break;
+            case CMSG_LOUD: {
+                if (rb_len(rb) >= 4) {
+                    res = rb_read4lsb(&rb);
+                    volume_factor = *(f32 *)&res;
+                    remaining_msg_size = 0;
+                }
+            } break;
+            case CMSG_SPED: {
+                if (rb_len(rb) >= 4) {
+                    res = rb_read4lsb(&rb);
+                    speed_factor = *(f32 *)&res;
+                    remaining_msg_size = 0;
+                }
+            } break;
+            default:
+                remaining_msg_size = 0;
+        }
+    }
+
+    // If message was read completely
+    if (!remaining_msg_size) {
+        switch (msg_type) {
+            case CMSG_PING: {
+                send_msg(SMSG_PONG);
+            } break;
+            case CMSG_PIDI: {
+                // @TODO: Check that received PIDI-index was expected (either last index +1 or 0)
+                request_next_chunk = false;
+                if (msg_data.chunk_index == 0) {
+                    music_timer = msg_data.new_time;
+                    Serial.println(F("Set new piano as piano"));
+                    memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
+                    swap_cmd_buffers();
+                    is_music_playing = true;
+                    // print_piano();
+                }
+                send_msg(SMSG_SUCC);
+            } break;
+            case CMSG_STOP: {
+                is_music_playing = false;
+                send_msg(SMSG_SUCC);
+            } break;
+            case CMSG_CONT: {
+                is_music_playing = true;
+                send_msg(SMSG_SUCC);
+            } break;
+            case CMSG_LOUD:
+            case CMSG_SPED: {
+                send_msg(SMSG_SUCC);
+            } break;
+            case CMSG_NONE:
+                break;
+        }
+        if (request_next_chunk && next_cmds_count == 0) {
+            send_msg(SMSG_REQP);
+            request_next_chunk = false;
+        }
+        msg_type = CMSG_NONE;
+    }
 }
