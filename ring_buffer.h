@@ -40,16 +40,16 @@ static inline u32 rb_peek4lsb(RingBuffer rb)
 
 static inline u64 rb_peek8lsb(RingBuffer rb)
 {
-    return ((u64)rb_peek_at(rb, 7) << 7*8) | ((u64)rb_peek_at(rb, 6) << 6*8) | ((u64)rb_peek_at(rb, 5) << 5*8) | ((u64)rb_peek_at(rb, 4) << 4*8) | 
+    return ((u64)rb_peek_at(rb, 7) << 7*8) | ((u64)rb_peek_at(rb, 6) << 6*8) | ((u64)rb_peek_at(rb, 5) << 5*8) | ((u64)rb_peek_at(rb, 4) << 4*8) |
            ((u64)rb_peek_at(rb, 3) << 3*8) | ((u64)rb_peek_at(rb, 2) << 2*8) | ((u64)rb_peek_at(rb, 1) << 1*8) | ((u64)rb_peek_at(rb, 0) << 0*8);
 }
 
 static inline void rb_peekn(RingBuffer rb, u8 n, u8 *buf)
 {
     for (u8 i = 0, j = rb.start; i < n; i++, j = (j+1)%RING_BUFFER_SIZE) {
-        buf[i] = rb.data[j];
+        // buf[i] = rb.data[j];
         // @Note: The more safe version would set the value to 0 if it's out of bounds
-        // buf[i] = rb.data[j]*(j < rb.end || (rb.end < rb.start && rb.start <= j));
+        buf[i] = rb.data[j]*(j < rb.end || (rb.end < rb.start && rb.start <= j));
     }
 }
 

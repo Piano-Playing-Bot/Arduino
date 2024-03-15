@@ -3,6 +3,7 @@
 #include "header.h"
 #include "ring_buffer.h"
 #include "ShiftRegisterPWM.h"
+#include "test.h"
 
 ////////////////
 // General Overview
@@ -38,6 +39,7 @@
 
 // undefine for release
 #define DEBUG
+#define DEBUG_CONN 1
 
 #define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
 #define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
@@ -113,7 +115,7 @@ void print_piano()
     Serial.print(piano[0], DEC);
     for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
         Serial.print(F(", "));
-        Serial.print(piano[i]);
+        Serial.print(piano[print_idx]);
     }
     Serial.print(F("]\n"));
 }
@@ -199,7 +201,7 @@ static inline void swap_cmd_buffers() {
     AIL_SWAP_PORTABLE(u32, cur_cmds_count, next_cmds_count);
     AIL_SWAP_PORTABLE(PidiCmd*, cur_cmds, next_cmds);
     request_next_chunk = cur_cmds_count > 0;
-#if DEBUG_CONN
+#ifdef DEBUG
     Serial.println(F("Swapped Buffers..."));
     print_cmds();
 #endif
@@ -221,10 +223,17 @@ void setup() {
     #ifdef DEBUG
         Serial.print(F("\n")); // @Cleanup: Only useful when monitoring output with the Arduino IDE's Serial Monitor
     #endif
+
+    // cur_cmds_count = set_music_chunks(cur_cmds);
+    // for (u8 i = 0; i < KEYS_AMOUNT; i++) piano[i] = 255;
+    piano[1] = 255;
+    piano[2] = 255;
+    is_music_playing = true;
 }
 
 // Communicate with client, play song by updating shift-registers and following cmd buffers given by the client
 void loop() {
+    // @TODO: speed_factor is not used yet
     ////////////////
     // Play song
     ////////////////
@@ -236,12 +245,20 @@ void loop() {
     // Set values for Shift-Registers
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
-          sr.set(i, AIL_LERP(piano[i]*speed_factor/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL));
+          u8 x = piano[i];
+          if (x > 0) x = AIL_LERP(piano[i]/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
+          if (x > 0) {
+              Serial.print("i: ");
+              Serial.print(i);
+              Serial.print(", x: ");
+              Serial.println(x);
+          }
+          sr.set(i, x);
       }
     } else {
-      for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
+        for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-    #if 1
+    #if 0
         if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) digitalWrite(LED_BUILTIN, HIGH);
         else digitalWrite(LED_BUILTIN, LOW);
     #endif
@@ -276,6 +293,9 @@ apply_cur_cmds:
             music_timer++;
             rest_timer -= CLOCK_CYCLE_LEN;
         }
+        // Serial.print(F("\nElapsed Time: "));
+        // Serial.print((u32)elapsed);
+        // Serial.println(F("ms"));
     }
 timer_update_done:
     ////////////////
@@ -284,6 +304,7 @@ timer_update_done:
 
     // Buffer bytes from Serial port
     if (start - msg_start_time > MSG_TIMEOUT) {
+        if (remaining_msg_size) Serial.println(F("Message timeout"));
         remaining_msg_size = 0;
         rb.start = 0;
         rb.end   = 0;
@@ -315,7 +336,7 @@ timer_update_done:
                 // Index: 4 bytes
                 if (msg_data.parts_read == 0 && rb_len(rb) >= 4) {
                     next_cmds_count = 0;
-                    request_next_chunk = cur_cmds_count > 0;
+                    // request_next_chunk = cur_cmds_count > 0;
                     msg_data.chunk_index = rb_read4lsb(&rb);
                     msg_data.parts_read++;
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
@@ -323,6 +344,8 @@ timer_update_done:
 #if DEBUG_CONN
                     Serial.print(F("PIDI Index: "));
                     Serial.println(msg_data.chunk_index);
+                    Serial.print(F("Remaining msg size: "));
+                    Serial.println(remaining_msg_size);
 #endif
                 }
                 // Time: 8 bytes
@@ -341,16 +364,17 @@ timer_update_done:
                     rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
                     msg_data.parts_read++;
                     remaining_msg_size -= KEYS_AMOUNT;
-                    // Serial.println(F("Read piano"));
-                    // Serial.print(F("Remaining msg size: "));
-                    // Serial.println(remaining_msg_size);
+                    Serial.println(F("Read piano"));
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
                     n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
                     // Serial.print(F("rb_len: "));
                     // Serial.print(rb_len(rb));
                     // Serial.print(", n: ");
-                    // Serial.println(n);
+                    if (n > 0) {
+                        Serial.print(F("n: "));
+                        Serial.println(n);
+                    }
                     for (i = 0; i < n; i++) {
                         rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
 #if DEBUG_CONN
@@ -396,6 +420,7 @@ timer_update_done:
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
                     music_timer = msg_data.new_time;
+                    Serial.println(F("Set new piano as piano"));
                     memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
                     swap_cmd_buffers();
                     is_music_playing = true;
@@ -420,6 +445,7 @@ timer_update_done:
         }
         if (request_next_chunk && next_cmds_count == 0) {
             send_msg(SMSG_REQP);
+            request_next_chunk = false;
         }
         msg_type = CMSG_NONE;
     }
