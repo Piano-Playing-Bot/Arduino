@@ -39,7 +39,8 @@
 
 // undefine for release
 #define DEBUG
-#define DEBUG_CONN 1
+#define DEBUG_CONN 0
+#define LOOPING
 
 #define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
 #define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
@@ -224,10 +225,8 @@ void setup() {
         Serial.print(F("\n")); // @Cleanup: Only useful when monitoring output with the Arduino IDE's Serial Monitor
     #endif
 
-    // cur_cmds_count = set_music_chunks(cur_cmds);
+    cur_cmds_count = set_music_chunks(cur_cmds);
     // for (u8 i = 0; i < KEYS_AMOUNT; i++) piano[i] = 255;
-    piano[1] = 255;
-    piano[2] = 255;
     is_music_playing = true;
 }
 
@@ -266,6 +265,13 @@ void loop() {
     // Look through cur_cmds List for updates to piano-array
     if (is_music_playing) {
 apply_cur_cmds:
+#ifdef LOOPING
+        if (cmd_idx > cur_cmds_count) {
+            music_timer = 0;
+            cmd_idx = 0;
+        }
+#endif
+
         while (cmd_idx < cur_cmds_count && cur_cmds[cmd_idx].time <= music_timer) {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
             apply_pidi_cmd(piano, cur_cmds, cmd_idx, cur_cmds_count, &active_keys_count);

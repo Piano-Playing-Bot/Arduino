@@ -17,15 +17,12 @@ u8 set_music_chunks(PidiCmd *chunks)
     //               A piano does have keys in the partially covered octaves -4 and 4 though)
     // - the velocity to play this with (any number between 0 and 255) (don't set anything here in `stop_note()`)
 
-    // for (i8 i = -4; i < -2; i++) {
-    //   for (u8 j = 0; j < PIANO_KEY_AMOUNT; j++) {
-    //     // Hier ist jetzt die Oktave i und der Key j
-    //     play_note(chunks, &len, 0, j, i, 255);
-    //   }
-    // }
-
-    // play_note(chunks, &len, 0, PIANO_KEY_A, -4, 255);
-    // stop_note(chunks, &len, 1000000, PIANO_KEY_A, -4);
+    for (i8 i = -4; i < -2; i++) {
+      for (u8 j = 0; j < PIANO_KEY_AMOUNT; j++) {
+        // Hier ist jetzt die Oktave i und der Key j
+        play_note(chunks, &len, 0, j, i, 255);
+      }
+    }
 
     sort(chunks, len);
 	  return len;
