@@ -25,7 +25,7 @@ u8 set_music_chunks(PidiCmd *chunks)
     }
 
     sort(chunks, len);
-	  return len;
+	return len;
 }
 
 static inline void play_note(PidiCmd *chunks, u8 *len, u64 time, u8 key, i8 octave, u8 velocity) {
