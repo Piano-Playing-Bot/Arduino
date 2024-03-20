@@ -38,14 +38,18 @@
 // 'buf' == 'buffer'
 
 // undefine for release
-#define DEBUG
-#define DEBUG_CONN 1
+// #define DEBUG
+#define DEBUG_CONN 0
+// #define LOOPING
 
 #define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
 #define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
 #define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
-#define MIN_KEY_VAL 185          // Minimum value to set for a motor to move, if a key should be played
+#define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
+
+#define PRINT(...)   do {} while(0) // Serial.print(__VA_ARGS__)  
+#define PRINTLN(...) do {} while(0) // Serial.println(__VA_ARGS__)
 
 typedef struct {
     u32 chunk_index; // Index of the chunk as given by the message
@@ -94,62 +98,48 @@ u8 clear_piano_idx;
 u8 reply[12];
 u8 encoded_cmd[ENCODED_CMD_LEN];
 
-
-// @Cleanup: To check amount of free RAM during development
-void display_freeram() {
-  Serial.print(F("- SRAM left: "));
-  Serial.println(freeRam());
-  Serial.flush();
-}
-
-int freeRam() {
-  extern int __heap_start,*__brkval;
-  int v;
-  return (int)&v - (__brkval == 0 ? (int)&__heap_start : (int) __brkval);
-}
-
 // @Cleanup: Only required for debugging whether the values get set correctly in the piano
 void print_piano()
 {
-    Serial.print(F("Piano: ["));
-    Serial.print(piano[0], DEC);
+    PRINT(F("["));
+    PRINT(piano[0], DEC);
     for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
-        Serial.print(F(", "));
-        Serial.print(piano[print_idx]);
+        PRINT(F(", "));
+        PRINT(piano[print_idx]);
     }
-    Serial.print(F("]\n"));
+    PRINT(F("]\n"));
 }
 
 void print_single_cmd(PidiCmd c)
 {
     static const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
-    Serial.print(F("{ key: "));
-    Serial.print(key_strs[c.key]);
-    Serial.print(F(", octave: "));
-    Serial.print(c.octave);
-    Serial.print(F(", on: "));
-    Serial.print(c.on ? F("true") : F("false"));
-    Serial.print(F(", time: "));
-    Serial.print((u32)c.time);
-    Serial.print(F(", velocity: "));
-    Serial.print(c.velocity);
-    Serial.print(F(" }"));
+    PRINT(F("{ key: "));
+    PRINT(key_strs[c.key]);
+    PRINT(F(", octave: "));
+    PRINT(c.octave);
+    PRINT(F(", on: "));
+    PRINT(c.on ? F("true") : F("false"));
+    PRINT(F(", time: "));
+    PRINT((u32)c.time);
+    PRINT(F(", velocity: "));
+    PRINT(c.velocity);
+    PRINT(F(" }"));
 }
 
 void print_cmds()
 {
-    Serial.print(F("Commands ("));
-    Serial.print(cur_cmds_count);
-    Serial.print(F(") ["));
+    PRINT(F("Commands ("));
+    PRINT(cur_cmds_count);
+    PRINT(F(") ["));
     if (cur_cmds_count > 0) {
-        Serial.print(F("\n    "));
+        PRINT(F("\n    "));
         print_single_cmd(cur_cmds[0]);
         for (print_idx = 1; print_idx < cur_cmds_count; print_idx++) {
-            Serial.print(F(",\n    "));
+            PRINT(F(",\n    "));
             print_single_cmd(cur_cmds[print_idx]);
         }
     }
-    Serial.print(F("\n]\n"));
+    PRINT(F("\n]\n"));
 }
 
 // Memset piano array to 0
@@ -168,6 +158,19 @@ void clear_piano() {
 
 static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
 {
+#if 1
+    while (toRead > 0) {
+        u8 x = Serial.read();
+#if DEBUG_CONN && 0
+        Serial.print(x, HEX);
+        Serial.print(F(" "));
+#endif
+        rb->data[rb->end] = x;
+        rb->end = (rb->end + 1)%RING_BUFFER_SIZE;
+        toRead--;
+    }
+#else
+    u8 initial_end = rb->end;
     u8 rest = RING_BUFFER_SIZE - rb->end;
     if (toRead < rest) {
         rb->end += Serial.readBytes(&(rb->data[rb->end]), toRead);
@@ -176,12 +179,20 @@ static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
         rb->end = toRead - rest;
         Serial.readBytes(rb->data, rb->end);
     }
+#if DEBUG_CONN
+    for (u8 i = initial_end; i != rb->end; i = (i + 1)%RING_BUFFER_SIZE) {
+        Serial.print(rb->data[i], HEX);
+        Serial.print(F(" "));
+    }
+#endif
+#endif
 }
 
 // Send a message back to the client
 static inline void send_msg(ServerMsgType type) {
     // @Performance: Further optimization by manually inlining the Serial.write call maybe...
-    Serial.flush();
+    Serial.print(F("\n"));
+    // Serial.flush();
     reply[0] = 'S';
     reply[1] = 'P';
     reply[2] = 'P';
@@ -192,6 +203,7 @@ static inline void send_msg(ServerMsgType type) {
     reply[7] = (u8)type;
     *(u32 *)(&reply[8]) = 0;
     Serial.write(reply, 12);
+    Serial.print(F("\n"));
     Serial.flush(); // Very important for client to receive complete message
 }
 
@@ -202,7 +214,7 @@ static inline void swap_cmd_buffers() {
     AIL_SWAP_PORTABLE(PidiCmd*, cur_cmds, next_cmds);
     request_next_chunk = cur_cmds_count > 0;
 #ifdef DEBUG
-    Serial.println(F("Swapped Buffers..."));
+    PRINTLN(F("Swapped Buffers..."));
     print_cmds();
 #endif
 }
@@ -221,14 +233,11 @@ void setup() {
       ; // wait for serial port to connect. Needed for native USB port only
     }
     #ifdef DEBUG
-        Serial.print(F("\n")); // @Cleanup: Only useful when monitoring output with the Arduino IDE's Serial Monitor
+        PRINT(F("\n")); // @Cleanup: Only useful when monitoring output with the Arduino IDE's Serial Monitor
     #endif
 
     // cur_cmds_count = set_music_chunks(cur_cmds);
-    // for (u8 i = 0; i < KEYS_AMOUNT; i++) piano[i] = 255;
-    piano[1] = 255;
-    piano[2] = 255;
-    is_music_playing = true;
+    // is_music_playing = true;
 }
 
 // Communicate with client, play song by updating shift-registers and following cmd buffers given by the client
@@ -238,7 +247,7 @@ void loop() {
     // Play song
     ////////////////
     // Get Start-Time for calculating elapsed time each iteration
-    // Serial.println(F("Test"));
+    // PRINTLN(F("Test"));
     // Serial.flush();
     start = millis();
 
@@ -246,22 +255,21 @@ void loop() {
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
           u8 x = piano[i];
-          if (x > 0) x = AIL_LERP(piano[i]/MAX_VELOCITY, MIN_KEY_VAL, MAX_KEY_VAL);
-          if (x > 0) {
-              Serial.print("i: ");
-              Serial.print(i);
-              Serial.print(", x: ");
-              Serial.println(x);
-          }
+          if (x > 0) x = MIN_KEY_VAL; // AIL_LERP(AIL_MAX(volume_factor*piano[i], MAX_VELOCITY), MIN_KEY_VAL, MAX_KEY_VAL);
           sr.set(i, x);
       }
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-    #if 0
-        if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) digitalWrite(LED_BUILTIN, HIGH);
-        else digitalWrite(LED_BUILTIN, LOW);
-    #endif
+#if 0
+    if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) {
+        Serial.println("LED on!");
+        digitalWrite(LED_BUILTIN, HIGH);
+    }
+    else {
+        digitalWrite(LED_BUILTIN, LOW);
+    }
+#endif
 
     // Look through cur_cmds List for updates to piano-array
     if (is_music_playing) {
@@ -269,11 +277,25 @@ apply_cur_cmds:
         while (cmd_idx < cur_cmds_count && cur_cmds[cmd_idx].time <= music_timer) {
             AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
             apply_pidi_cmd(piano, cur_cmds, cmd_idx, cur_cmds_count, &active_keys_count);
-            #if 0
-                print_piano();
-            #endif
+#if 0
+            PRINT(F("\nTime: "));
+            PRINT((u32)music_timer);
+            PRINT(F(": "));
+            print_piano();
+#endif
             cmd_idx++;
         }
+
+#ifdef LOOPING
+        if (cmd_idx >= cur_cmds_count) {
+            // Serial.println(F("..."));
+            for (u8 piano_idx = 0; piano_idx < KEYS_AMOUNT; piano_idx++) {
+                piano[piano_idx] = 0;
+            }
+            cmd_idx = 0;
+            music_timer = 0;
+        }
+#endif
 
         // If cur_cmds is done (& next_cmds even has any cmds) -> swap cur_cmds & next_cmds
         if (cmd_idx >= cur_cmds_count) {
@@ -293,9 +315,9 @@ apply_cur_cmds:
             music_timer++;
             rest_timer -= CLOCK_CYCLE_LEN;
         }
-        // Serial.print(F("\nElapsed Time: "));
-        // Serial.print((u32)elapsed);
-        // Serial.println(F("ms"));
+        // PRINT(F("\nElapsed Time: "));
+        // PRINT((u32)elapsed);
+        // PRINTLN(F("ms"));
     }
 timer_update_done:
     ////////////////
@@ -303,16 +325,20 @@ timer_update_done:
     ////////////////
 
     // Buffer bytes from Serial port
-    if (start - msg_start_time > MSG_TIMEOUT) {
-        if (remaining_msg_size) Serial.println(F("Message timeout"));
-        remaining_msg_size = 0;
-        rb.start = 0;
-        rb.end   = 0;
-    }
     toRead = Serial.available();
     if (toRead) {
         rb_get_from_serial(&rb, toRead);
         msg_start_time = start;
+    }
+    if (start - msg_start_time > MSG_TIMEOUT) {
+        if (remaining_msg_size) {
+            Serial.print(F("\nMessage timeout - Remaining Msg Size: "));
+            Serial.println(remaining_msg_size);
+            msg_type = CMSG_NONE;
+        }
+        remaining_msg_size = 0;
+        rb.start = 0;
+        rb.end   = 0;
     }
 
     // If starting to read a new message from the Client
@@ -342,10 +368,10 @@ timer_update_done:
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
                     else remaining_msg_size -= 4;
 #if DEBUG_CONN
-                    Serial.print(F("PIDI Index: "));
-                    Serial.println(msg_data.chunk_index);
-                    Serial.print(F("Remaining msg size: "));
-                    Serial.println(remaining_msg_size);
+                    PRINT(F("PIDI Index: "));
+                    PRINTLN(msg_data.chunk_index);
+                    PRINT(F("Remaining msg size: "));
+                    PRINTLN(remaining_msg_size);
 #endif
                 }
                 // Time: 8 bytes
@@ -355,8 +381,8 @@ timer_update_done:
                     if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
                     remaining_msg_size -= 8;
 #if DEBUG_CONN
-                    Serial.print(F("PIDI Time: "));
-                    Serial.println((u32)msg_data.new_time);
+                    PRINT(F("PIDI Time: "));
+                    PRINTLN((u32)msg_data.new_time);
 #endif
                 }
                 if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
@@ -364,27 +390,29 @@ timer_update_done:
                     rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
                     msg_data.parts_read++;
                     remaining_msg_size -= KEYS_AMOUNT;
-                    Serial.println(F("Read piano"));
+                    PRINTLN(F("Read piano"));
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
                     n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
-                    // Serial.print(F("rb_len: "));
-                    // Serial.print(rb_len(rb));
-                    // Serial.print(", n: ");
+                    // PRINT(F("rb_len: "));
+                    // PRINT(rb_len(rb));
+                    // PRINT(", n: ");
+#if DEBUG_CONN
                     if (n > 0) {
-                        Serial.print(F("n: "));
-                        Serial.println(n);
+                        PRINT(F("n: "));
+                        PRINTLN(n);
                     }
+#endif
                     for (i = 0; i < n; i++) {
                         rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
 #if DEBUG_CONN
-                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { Serial.print(encoded_cmd[idx]); Serial.print(F(" ")); }
-                        Serial.print(F(" -> "));
+                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { PRINT(encoded_cmd[idx]); PRINT(F(" ")); }
+                        PRINT(F(" -> "));
 #endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
 #if DEBUG_CONN
                         print_single_cmd(next_cmds[next_cmds_count - 1]);
-                        Serial.print(F("\n"));
+                        PRINT(F("\n"));
 #endif
                     }
                     remaining_msg_size -= n*ENCODED_CMD_LEN - (remaining_msg_size%ENCODED_CMD_LEN); // subtract any modulo rests, to make sure we always finish reading the message
@@ -420,7 +448,7 @@ timer_update_done:
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
                     music_timer = msg_data.new_time;
-                    Serial.println(F("Set new piano as piano"));
+                    PRINTLN(F("Set new piano as piano"));
                     memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
                     swap_cmd_buffers();
                     is_music_playing = true;

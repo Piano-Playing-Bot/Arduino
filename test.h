@@ -27,6 +27,21 @@ u8 set_music_chunks(PidiCmd *chunks)
     // play_note(chunks, &len, 0, PIANO_KEY_A, -4, 255);
     // stop_note(chunks, &len, 1000000, PIANO_KEY_A, -4);
 
+    u8 j = 0;
+    // for (u8 i = PIANO_KEY_F; i < PIANO_KEY_AMOUNT; i++) {
+    //     play_note(chunks, &len, j*1, i, -1, 255);
+    //     j++;
+    // }
+    // for (u8 i = 0; i <= PIANO_KEY_C; i++) {
+    //     play_note(chunks, &len, j*1, i, 0, 255);
+    //     j++;
+    // }
+
+    // play_note(chunks, &len, 10,  PIANO_KEY_F, -1, 255);
+    // stop_note(chunks, &len, 110,  PIANO_KEY_F, -1);
+    // play_note(chunks, &len, 200, PIANO_KEY_F, -1, 255);
+    // stop_note(chunks, &len, 300, PIANO_KEY_F, -1);
+
     sort(chunks, len);
 	  return len;
 }
