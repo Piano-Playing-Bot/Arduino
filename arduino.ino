@@ -1,7 +1,9 @@
 #define CONST_VAR PROGMEM
+#define AIL_RING_SIZE 128
+#define AIL_RING_DEF static inline
+// #define AIL_RING_ASSERT(__VA_ARGS__) do {} while(0)
 
 #include "header.h"
-#include "ring_buffer.h"
 #include "ShiftRegisterPWM.h"
 #include "test.h"
 
@@ -38,8 +40,8 @@
 // 'buf' == 'buffer'
 
 // undefine for release
-// #define DEBUG
-#define DEBUG_CONN 0
+#define DEBUG
+#define DEBUG_CONN 1
 // #define LOOPING
 
 #define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
@@ -48,8 +50,8 @@
 #define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
 
-#define PRINT(...)   do {} while(0) // Serial.print(__VA_ARGS__)  
-#define PRINTLN(...) do {} while(0) // Serial.println(__VA_ARGS__)
+#define PRINT(...)   Serial.print(__VA_ARGS__)   // do {} while(0)
+#define PRINTLN(...) Serial.println(__VA_ARGS__) // do {} while(0)
 
 typedef struct {
     u32 chunk_index; // Index of the chunk as given by the message
@@ -62,19 +64,19 @@ ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, PWM_RESOLUTION);
 
 u8 piano[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
 
-PidiCmd cmds_buf1[CMDS_LIST_LEN]  = { 0 };
+PidiCmd cmds_buf1[CMDS_LIST_LEN] = { 0 };
 PidiCmd cmds_buf2[CMDS_LIST_LEN] = { 0 };
-PidiCmd *cur_cmds  = cmds_buf1;
-PidiCmd *next_cmds = cmds_buf2;
-u32 cur_cmds_count    = 0;
-u32 next_cmds_count   = 0;
-u32 cmd_idx           = 0;
-u64 music_timer       = 0;
-u16 rest_timer        = 0;
-u8  active_keys_count = 0;
+PidiCmd *cur_cmds       = cmds_buf1;
+PidiCmd *next_cmds      = cmds_buf2;
+u32 cur_cmds_count      = 0;
+u32 next_cmds_count     = 0;
+u32 cmd_idx             = 0;
+u64 music_timer         = 0;
+u16 rest_timer          = 0;
+u8  active_keys_count   = 0;
 bool is_music_playing   = false;
 bool request_next_chunk = false;
-RingBuffer rb = {0};
+AIL_RingBuffer rb       = {0};
 
 f32 volume_factor = 1.0f;
 f32 speed_factor  = 1.0f;
@@ -156,22 +158,22 @@ void clear_piano() {
     // }
 }
 
-static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
+static inline void ring_get_from_serial(AIL_RingBuffer *rb, u32 toRead)
 {
-#if 1
+#if 0
     while (toRead > 0) {
         u8 x = Serial.read();
-#if DEBUG_CONN && 0
+#if DEBUG_CONN
         Serial.print(x, HEX);
         Serial.print(F(" "));
 #endif
         rb->data[rb->end] = x;
-        rb->end = (rb->end + 1)%RING_BUFFER_SIZE;
+        rb->end = (rb->end + 1)%AIL_RING_SIZE;
         toRead--;
     }
 #else
     u8 initial_end = rb->end;
-    u8 rest = RING_BUFFER_SIZE - rb->end;
+    u8 rest = AIL_RING_SIZE - rb->end;
     if (toRead < rest) {
         rb->end += Serial.readBytes(&(rb->data[rb->end]), toRead);
     } else {
@@ -180,7 +182,7 @@ static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
         Serial.readBytes(rb->data, rb->end);
     }
 #if DEBUG_CONN
-    for (u8 i = initial_end; i != rb->end; i = (i + 1)%RING_BUFFER_SIZE) {
+    for (u8 i = initial_end; i != rb->end; i = (i + 1)%AIL_RING_SIZE) {
         Serial.print(rb->data[i], HEX);
         Serial.print(F(" "));
     }
@@ -255,15 +257,15 @@ void loop() {
     if (is_music_playing) {
       for (i = 0; i < KEYS_AMOUNT; i++) {
           u8 x = piano[i];
-          if (x > 0) x = MIN_KEY_VAL; // AIL_LERP(AIL_MAX(volume_factor*piano[i], MAX_VELOCITY), MIN_KEY_VAL, MAX_KEY_VAL);
+          if (x > 0) x = AIL_LERP(AIL_MAX(volume_factor*piano[i], MAX_VELOCITY), MIN_KEY_VAL, MAX_KEY_VAL);
           sr.set(i, x);
       }
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-#if 0
+#if 1
     if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) {
-        Serial.println("LED on!");
+        // Serial.println("LED on!");
         digitalWrite(LED_BUILTIN, HIGH);
     }
     else {
@@ -327,7 +329,7 @@ timer_update_done:
     // Buffer bytes from Serial port
     toRead = Serial.available();
     if (toRead) {
-        rb_get_from_serial(&rb, toRead);
+        ring_get_from_serial(&rb, toRead);
         msg_start_time = start;
     }
     if (start - msg_start_time > MSG_TIMEOUT) {
@@ -343,14 +345,14 @@ timer_update_done:
 
     // If starting to read a new message from the Client
     if (!remaining_msg_size) {
-        while (rb_len(rb) >= 12 && rb_peek4msb(rb) != SPPP_MAGIC) {
-            rb_pop(&rb);
+        while (ail_ring_len(rb) >= 12 && ail_ring_peek4msb(rb) != SPPP_MAGIC) {
+            ail_ring_pop(&rb);
         }
-        if (rb_len(rb) >= 12) {
-            rb_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
-            msg_type = rb_read4msb(&rb);
+        if (ail_ring_len(rb) >= 12) {
+            ail_ring_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
+            msg_type = ail_ring_read4msb(&rb);
             msg_data.parts_read = 0;
-            remaining_msg_size = rb_read4lsb(&rb);
+            remaining_msg_size = ail_ring_read4lsb(&rb);
             if (remaining_msg_size > MAX_CLIENT_MSG_SIZE) remaining_msg_size = 0;
         }
     }
@@ -360,10 +362,10 @@ timer_update_done:
         switch (msg_type) {
             case CMSG_PIDI: {
                 // Index: 4 bytes
-                if (msg_data.parts_read == 0 && rb_len(rb) >= 4) {
+                if (msg_data.parts_read == 0 && ail_ring_len(rb) >= 4) {
                     next_cmds_count = 0;
                     // request_next_chunk = cur_cmds_count > 0;
-                    msg_data.chunk_index = rb_read4lsb(&rb);
+                    msg_data.chunk_index = ail_ring_read4lsb(&rb);
                     msg_data.parts_read++;
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
                     else remaining_msg_size -= 4;
@@ -375,8 +377,8 @@ timer_update_done:
 #endif
                 }
                 // Time: 8 bytes
-                if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && rb_len(rb) >= 8) {
-                    msg_data.new_time = rb_read8lsb(&rb);
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && ail_ring_len(rb) >= 8) {
+                    msg_data.new_time = ail_ring_read8lsb(&rb);
                     msg_data.parts_read++;
                     if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
                     remaining_msg_size -= 8;
@@ -385,17 +387,17 @@ timer_update_done:
                     PRINTLN((u32)msg_data.new_time);
 #endif
                 }
-                if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
-                    AIL_STATIC_ASSERT(KEYS_AMOUNT < RING_BUFFER_SIZE);
-                    rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && ail_ring_len(rb) >= KEYS_AMOUNT) {
+                    AIL_STATIC_ASSERT(KEYS_AMOUNT < AIL_RING_SIZE);
+                    ail_ring_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
                     msg_data.parts_read++;
                     remaining_msg_size -= KEYS_AMOUNT;
                     PRINTLN(F("Read piano"));
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
-                    n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
-                    // PRINT(F("rb_len: "));
-                    // PRINT(rb_len(rb));
+                    n = AIL_MIN(ail_ring_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
+                    // PRINT(F("ail_ring_len: "));
+                    // PRINT(ail_ring_len(rb));
                     // PRINT(", n: ");
 #if DEBUG_CONN
                     if (n > 0) {
@@ -404,9 +406,9 @@ timer_update_done:
                     }
 #endif
                     for (i = 0; i < n; i++) {
-                        rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
+                        ail_ring_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
 #if DEBUG_CONN
-                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { PRINT(encoded_cmd[idx]); PRINT(F(" ")); }
+                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { PRINT(encoded_cmd[idx], HEX); PRINT(F(" ")); }
                         PRINT(F(" -> "));
 #endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
@@ -419,15 +421,15 @@ timer_update_done:
                 }
             } break;
             case CMSG_LOUD: {
-                if (rb_len(rb) >= 4) {
-                    res = rb_read4lsb(&rb);
+                if (ail_ring_len(rb) >= 4) {
+                    res = ail_ring_read4lsb(&rb);
                     volume_factor = *(f32 *)&res;
                     remaining_msg_size = 0;
                 }
             } break;
             case CMSG_SPED: {
-                if (rb_len(rb) >= 4) {
-                    res = rb_read4lsb(&rb);
+                if (ail_ring_len(rb) >= 4) {
+                    res = ail_ring_read4lsb(&rb);
                     speed_factor = *(f32 *)&res;
                     remaining_msg_size = 0;
                 }
