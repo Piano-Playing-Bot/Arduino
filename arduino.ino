@@ -1,9 +1,11 @@
 #define CONST_VAR PROGMEM
+#define AIL_RING_SIZE 128
+#define AIL_RING_DEF static inline
+#define AIL_DBG_PRINT(x) Serial.print(x)
+#define AIL_ASSERT_COMMON(expr, msg) do { if (!(expr)) { AIL_DBG_PRINT("Assertion failed in " __FILE__ ":" AIL_STR_LINE "\n  " msg); } } while(0)
 
 #include "header.h"
-#include "ring_buffer.h"
 #include "ShiftRegisterPWM.h"
-#include "test.h"
 
 ////////////////
 // General Overview
@@ -21,7 +23,6 @@
     // If a message has been starting to be read, continue reading bytes for it, building up the message data
     // When the message was parsed completely, react to it accordingly
 
-// @TODO: Test code
 // @TODO: REQP messages do not provide the 4 bytes for indicating the expected index atm. Either this code or the Protocol should be updated to be consistent
 // @Performance: If we stay with max-speed at 1ms, we don't need a restTimer variable and simplify elapsed-time calculations
 // @Performance: Instead of using the ShitRegisterPWM library, we can copy the relevant parts of it and thus hardcode them
@@ -38,7 +39,7 @@
 // 'buf' == 'buffer'
 
 // undefine for release
-// #define DEBUG
+#define DEBUG
 #define DEBUG_CONN 0
 // #define LOOPING
 
@@ -48,13 +49,13 @@
 #define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
 
-#define PRINT(...)   do {} while(0) // Serial.print(__VA_ARGS__)  
-#define PRINTLN(...) do {} while(0) // Serial.println(__VA_ARGS__)
+#define PRINT(...)   Serial.print(__VA_ARGS__) // do {} while(0)
+#define PRINTLN(...) Serial.println(__VA_ARGS__) // do {} while(0)
 
 typedef struct {
     u32 chunk_index; // Index of the chunk as given by the message
     u32 parts_read;  // Amount of parts read of the PIDI message
-    u64 new_time;    // New time to start playing at
+    u32 new_time;    // New time to start playing at
     u8  new_piano[KEYS_AMOUNT]; // New starting piano PWM values
 } MsgData;
 
@@ -62,19 +63,20 @@ ShiftRegisterPWM sr(SHIFT_REGISTER_COUNT, PWM_RESOLUTION);
 
 u8 piano[KEYS_AMOUNT] = {0}; // This array is adressing the motors for each key on the piano
 
-PidiCmd cmds_buf1[CMDS_LIST_LEN]  = { 0 };
+PidiCmd cmds_buf1[CMDS_LIST_LEN] = { 0 };
 PidiCmd cmds_buf2[CMDS_LIST_LEN] = { 0 };
-PidiCmd *cur_cmds  = cmds_buf1;
-PidiCmd *next_cmds = cmds_buf2;
-u32 cur_cmds_count    = 0;
-u32 next_cmds_count   = 0;
-u32 cmd_idx           = 0;
-u64 music_timer       = 0;
-u16 rest_timer        = 0;
-u8  active_keys_count = 0;
+PlayedKeyList played_keys        = { 0 };
+PidiCmd *cur_cmds       = cmds_buf1;
+PidiCmd *next_cmds      = cmds_buf2;
+u32 cur_cmds_count      = 0;
+u32 next_cmds_count     = 0;
+u32 cmd_idx             = 0;
+u32 music_timer         = 0;
+u32 prev_cmd_time       = 0;
+u8  active_keys_count   = 0;
 bool is_music_playing   = false;
 bool request_next_chunk = false;
-RingBuffer rb = {0};
+AIL_RingBuffer rb       = {0};
 
 f32 volume_factor = 1.0f;
 f32 speed_factor  = 1.0f;
@@ -85,9 +87,8 @@ MsgData msg_data       = { 0 };    // Data provided in the message (aside from t
 
 // Logically local variables, put in global scope, so that the Arduino IDE can correctly report used memory
 u32 msg_start_time; // For message timeout
-u64 start;
+u32 start;
 u32 i;
-u64 elapsed;
 u32 toRead;
 u32 buffer_size;
 bool correct_magic;
@@ -114,15 +115,15 @@ void print_single_cmd(PidiCmd c)
 {
     static const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
     PRINT(F("{ key: "));
-    PRINT(key_strs[c.key]);
+    PRINT(key_strs[pidi_key(c)]);
     PRINT(F(", octave: "));
-    PRINT(c.octave);
-    PRINT(F(", on: "));
-    PRINT(c.on ? F("true") : F("false"));
-    PRINT(F(", time: "));
-    PRINT((u32)c.time);
-    PRINT(F(", velocity: "));
-    PRINT(c.velocity);
+    PRINT(pidi_octave(c));
+    PRINT(F(", dt: "));
+    PRINT(pidi_dt(c));
+    PRINT(F("ms, len: "));
+    PRINT(pidi_len(c)*LEN_FACTOR);
+    PRINT(F("ms, velocity: "));
+    PRINT(pidi_velocity(c));
     PRINT(F(" }"));
 }
 
@@ -156,22 +157,22 @@ void clear_piano() {
     // }
 }
 
-static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
+static inline void ring_get_from_serial(AIL_RingBuffer *rb, u32 toRead)
 {
 #if 1
     while (toRead > 0) {
         u8 x = Serial.read();
-#if DEBUG_CONN && 0
+#if 1
         Serial.print(x, HEX);
         Serial.print(F(" "));
 #endif
         rb->data[rb->end] = x;
-        rb->end = (rb->end + 1)%RING_BUFFER_SIZE;
+        rb->end = (rb->end + 1)%AIL_RING_SIZE;
         toRead--;
     }
 #else
     u8 initial_end = rb->end;
-    u8 rest = RING_BUFFER_SIZE - rb->end;
+    u8 rest = AIL_RING_SIZE - rb->end;
     if (toRead < rest) {
         rb->end += Serial.readBytes(&(rb->data[rb->end]), toRead);
     } else {
@@ -180,7 +181,7 @@ static inline void rb_get_from_serial(RingBuffer *rb, u32 toRead)
         Serial.readBytes(rb->data, rb->end);
     }
 #if DEBUG_CONN
-    for (u8 i = initial_end; i != rb->end; i = (i + 1)%RING_BUFFER_SIZE) {
+    for (u8 i = initial_end; i != rb->end; i = (i + 1)%AIL_RING_SIZE) {
         Serial.print(rb->data[i], HEX);
         Serial.print(F(" "));
     }
@@ -261,9 +262,9 @@ void loop() {
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-#if 0
+#ifdef DEBUG
     if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) {
-        Serial.println("LED on!");
+        // PRINTLN(F("LED ON!"));
         digitalWrite(LED_BUILTIN, HIGH);
     }
     else {
@@ -274,15 +275,17 @@ void loop() {
     // Look through cur_cmds List for updates to piano-array
     if (is_music_playing) {
 apply_cur_cmds:
-        while (cmd_idx < cur_cmds_count && cur_cmds[cmd_idx].time <= music_timer) {
-            AIL_STATIC_ASSERT(KEYS_AMOUNT <= INT8_MAX);
-            apply_pidi_cmd(piano, cur_cmds, cmd_idx, cur_cmds_count, &active_keys_count);
-#if 0
-            PRINT(F("\nTime: "));
-            PRINT((u32)music_timer);
-            PRINT(F(": "));
-            print_piano();
-#endif
+        if (music_timer < played_keys.start_time) {
+            Serial.print(F("Current Time: "));
+            Serial.print(music_timer);
+            Serial.print(F(", Played Keys Time: "));
+            Serial.println(played_keys.start_time);
+        }
+        update_played_keys(music_timer, piano, &played_keys);
+        while (cmd_idx < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmd_idx]) <= music_timer) {
+            apply_cmd_no_keys_update(cur_cmds[cmd_idx], piano, &played_keys);
+            prev_cmd_time += pidi_dt(cur_cmds[cmd_idx]);
+            // Serial.println(F("Applying Command..."));
             cmd_idx++;
         }
 
@@ -308,16 +311,7 @@ apply_cur_cmds:
         }
 
         // Update timer
-        elapsed = millis() - start;
-        music_timer += elapsed/CLOCK_CYCLE_LEN;
-        rest_timer  += elapsed%CLOCK_CYCLE_LEN;
-        if (rest_timer >= CLOCK_CYCLE_LEN) {
-            music_timer++;
-            rest_timer -= CLOCK_CYCLE_LEN;
-        }
-        // PRINT(F("\nElapsed Time: "));
-        // PRINT((u32)elapsed);
-        // PRINTLN(F("ms"));
+        music_timer += millis() - start;
     }
 timer_update_done:
     ////////////////
@@ -327,7 +321,7 @@ timer_update_done:
     // Buffer bytes from Serial port
     toRead = Serial.available();
     if (toRead) {
-        rb_get_from_serial(&rb, toRead);
+        ring_get_from_serial(&rb, toRead);
         msg_start_time = start;
     }
     if (start - msg_start_time > MSG_TIMEOUT) {
@@ -343,14 +337,14 @@ timer_update_done:
 
     // If starting to read a new message from the Client
     if (!remaining_msg_size) {
-        while (rb_len(rb) >= 12 && rb_peek4msb(rb) != SPPP_MAGIC) {
-            rb_pop(&rb);
+        while (ail_ring_len(rb) >= 12 && ail_ring_peek4msb(rb) != SPPP_MAGIC) {
+            ail_ring_pop(&rb);
         }
-        if (rb_len(rb) >= 12) {
-            rb_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
-            msg_type = rb_read4msb(&rb);
+        if (ail_ring_len(rb) >= 12) {
+            ail_ring_popn(&rb, 4); // Magic bytes (must be correct bc of loop catching it otherwise before)
+            msg_type = ail_ring_read4msb(&rb);
             msg_data.parts_read = 0;
-            remaining_msg_size = rb_read4lsb(&rb);
+            remaining_msg_size = ail_ring_read4lsb(&rb);
             if (remaining_msg_size > MAX_CLIENT_MSG_SIZE) remaining_msg_size = 0;
         }
     }
@@ -360,10 +354,10 @@ timer_update_done:
         switch (msg_type) {
             case CMSG_PIDI: {
                 // Index: 4 bytes
-                if (msg_data.parts_read == 0 && rb_len(rb) >= 4) {
+                if (msg_data.parts_read == 0 && ail_ring_len(rb) >= 4) {
                     next_cmds_count = 0;
                     // request_next_chunk = cur_cmds_count > 0;
-                    msg_data.chunk_index = rb_read4lsb(&rb);
+                    msg_data.chunk_index = ail_ring_read4lsb(&rb);
                     msg_data.parts_read++;
                     if (remaining_msg_size < 4) remaining_msg_size = 0;
                     else remaining_msg_size -= 4;
@@ -374,29 +368,26 @@ timer_update_done:
                     PRINTLN(remaining_msg_size);
 #endif
                 }
-                // Time: 8 bytes
-                if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && rb_len(rb) >= 8) {
-                    msg_data.new_time = rb_read8lsb(&rb);
+                // Time: 4 bytes
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 1 && ail_ring_len(rb) >= 4) {
+                    msg_data.new_time = ail_ring_peek8lsb(rb); ail_ring_popn(&rb, 4);
                     msg_data.parts_read++;
-                    if (remaining_msg_size < 8 + KEYS_AMOUNT) remaining_msg_size = 0;
-                    remaining_msg_size -= 8;
+                    if (remaining_msg_size < 4 + KEYS_AMOUNT) remaining_msg_size = 0;
+                    remaining_msg_size -= 4;
 #if DEBUG_CONN
                     PRINT(F("PIDI Time: "));
                     PRINTLN((u32)msg_data.new_time);
 #endif
                 }
-                if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && rb_len(rb) >= KEYS_AMOUNT) {
-                    AIL_STATIC_ASSERT(KEYS_AMOUNT < RING_BUFFER_SIZE);
-                    rb_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
+                if (msg_data.chunk_index == 0 && msg_data.parts_read == 2 && ail_ring_len(rb) >= KEYS_AMOUNT) {
+                    AIL_STATIC_ASSERT(KEYS_AMOUNT < AIL_RING_SIZE);
+                    ail_ring_readn(&rb, KEYS_AMOUNT, msg_data.new_piano);
                     msg_data.parts_read++;
                     remaining_msg_size -= KEYS_AMOUNT;
                     PRINTLN(F("Read piano"));
                 }
                 if ((msg_data.chunk_index > 0 && msg_data.parts_read > 0) || (msg_data.chunk_index == 0 && msg_data.parts_read == 3)) {
-                    n = AIL_MIN(rb_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
-                    // PRINT(F("rb_len: "));
-                    // PRINT(rb_len(rb));
-                    // PRINT(", n: ");
+                    n = AIL_MIN(ail_ring_len(rb), remaining_msg_size)/ENCODED_CMD_LEN;
 #if DEBUG_CONN
                     if (n > 0) {
                         PRINT(F("n: "));
@@ -404,9 +395,9 @@ timer_update_done:
                     }
 #endif
                     for (i = 0; i < n; i++) {
-                        rb_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
+                        ail_ring_readn(&rb, ENCODED_CMD_LEN, encoded_cmd);
 #if DEBUG_CONN
-                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { PRINT(encoded_cmd[idx]); PRINT(F(" ")); }
+                        for (u8 idx = 0; idx < ENCODED_CMD_LEN; idx++) { PRINT(encoded_cmd[idx], HEX); PRINT(F(" ")); }
                         PRINT(F(" -> "));
 #endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
@@ -419,15 +410,15 @@ timer_update_done:
                 }
             } break;
             case CMSG_LOUD: {
-                if (rb_len(rb) >= 4) {
-                    res = rb_read4lsb(&rb);
+                if (ail_ring_len(rb) >= 4) {
+                    res = ail_ring_read4lsb(&rb);
                     volume_factor = *(f32 *)&res;
                     remaining_msg_size = 0;
                 }
             } break;
             case CMSG_SPED: {
-                if (rb_len(rb) >= 4) {
-                    res = rb_read4lsb(&rb);
+                if (ail_ring_len(rb) >= 4) {
+                    res = ail_ring_read4lsb(&rb);
                     speed_factor = *(f32 *)&res;
                     remaining_msg_size = 0;
                 }
@@ -447,8 +438,8 @@ timer_update_done:
                 // @TODO: Check that received PIDI-index was expected (either last index +1 or 0)
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
+                    // @TODO: This doesn't work with played_keys system anymore
                     music_timer = msg_data.new_time;
-                    PRINTLN(F("Set new piano as piano"));
                     memcpy(piano, msg_data.new_piano, KEYS_AMOUNT);
                     swap_cmd_buffers();
                     is_music_playing = true;
