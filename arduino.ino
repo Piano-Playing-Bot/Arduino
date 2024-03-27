@@ -245,14 +245,14 @@ void loop()
 
     // Set values for Shift-Registers
     if (is_music_playing) {
-      for (i = 0; i < KEYS_AMOUNT; i++) {
-          sr.set(i, !piano[i] ? piano[i] : AIL_LERP(AIL_MAX(volume_factor*piano[i], MAX_VELOCITY), MIN_KEY_VAL, MAX_KEY_VAL));
-      }
+        for (i = 0; i < KEYS_AMOUNT; i++) {
+            sr.set(i, !piano[i] ? piano[i] : AIL_LERP(AIL_MAX(((f32)volume_factor*piano[i])/((f32)MAX_VELOCITY), 1.0f), MIN_KEY_VAL, MAX_KEY_VAL));
+        }
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
 #ifdef DEBUG
-    if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) {
+    if (is_music_playing && piano[MID_OCTAVE_START_IDX - 2*PIANO_KEY_AMOUNT + PIANO_KEY_C]) {
         // PRINTLN(F("LED ON!"));
         digitalWrite(LED_BUILTIN, HIGH);
     }
@@ -330,7 +330,7 @@ timer_update_done:
     if (!remaining_msg_size) {
         if (ail_ring_len(rb)) {
             // Serial.print(F("rb_len: "));
-            PRITNLN(ail_ring_len(rb));
+            PRINTLN(ail_ring_len(rb));
         }
         while (ail_ring_len(rb) >= 12 && ail_ring_peek4msb(rb) != SPPP_MAGIC) {
             // Serial.println(F("Poppin.."));
