@@ -38,9 +38,8 @@
 // 'msg' == 'message'
 // 'buf' == 'buffer'
 
-// #define DEBUG
+#define DEBUG
 #define DEBUG_CONN 0
-// #define LOOPING
 #ifdef DEBUG
     #define PRINT(...)   Serial.print(__VA_ARGS__)
     #define PRINTLN(...) Serial.println(__VA_ARGS__)
@@ -270,24 +269,24 @@ apply_cur_cmds:
             PRINT(F(", Played Keys Time: "));
             PRINTLN(played_keys.start_time);
         }
+        u8 c = played_keys.count;
         update_played_keys(music_timer, piano, &played_keys);
+        if (c != played_keys.count) {
+            Serial.print(F("old: "));
+            Serial.print(c);
+            Serial.print(F(", new: "));
+            Serial.println(played_keys.count);
+            print_piano();
+        }
         while (cmd_idx < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmd_idx]) <= music_timer) {
             apply_cmd_no_keys_update(cur_cmds[cmd_idx], piano, &played_keys);
             prev_cmd_time += pidi_dt(cur_cmds[cmd_idx]);
-            // Serial.println(F("Applying Command..."));
+            Serial.print(F("Applying Command: "));
+            print_single_cmd(cur_cmds[cmd_idx]);
+            Serial.print(F("\n"));
+            // print_piano();
             cmd_idx++;
         }
-
-#ifdef LOOPING
-        if (cmd_idx >= cur_cmds_count) {
-            // Serial.println(F("..."));
-            for (u8 piano_idx = 0; piano_idx < KEYS_AMOUNT; piano_idx++) {
-                piano[piano_idx] = 0;
-            }
-            cmd_idx = 0;
-            music_timer = 0;
-        }
-#endif
 
         // If cur_cmds is done (& next_cmds even has any cmds) & we are not in the middle of reading the next PIDI message -> swap cur_cmds & next_cmds
         // @Study: Do we actually want this check that we're not in the middle of reading the PIDI message?
@@ -295,8 +294,8 @@ apply_cur_cmds:
             if (next_cmds_count > 0) {
                 swap_cmd_buffers();
                 goto apply_cur_cmds;
-            } else {
-                goto timer_update_done; // Don't want to increase music timer, if no cmds can be applied
+            } else if (!played_keys.count) {
+                goto timer_update_done; // Don't want to increase music timer, if music is done
             }
         }
 
