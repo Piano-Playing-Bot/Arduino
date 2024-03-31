@@ -269,21 +269,13 @@ apply_cur_cmds:
             PRINT(F(", Played Keys Time: "));
             PRINTLN(played_keys.start_time);
         }
-        u8 c = played_keys.count;
         update_played_keys(music_timer, piano, &played_keys);
-        if (c != played_keys.count) {
-            Serial.print(F("old: "));
-            Serial.print(c);
-            Serial.print(F(", new: "));
-            Serial.println(played_keys.count);
-            print_piano();
-        }
         while (cmd_idx < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmd_idx]) <= music_timer) {
             apply_cmd_no_keys_update(cur_cmds[cmd_idx], piano, &played_keys);
             prev_cmd_time += pidi_dt(cur_cmds[cmd_idx]);
-            Serial.print(F("Applying Command: "));
-            print_single_cmd(cur_cmds[cmd_idx]);
-            Serial.print(F("\n"));
+            // Serial.print(F("Applying Command: "));
+            // print_single_cmd(cur_cmds[cmd_idx]);
+            // Serial.print(F("\n"));
             // print_piano();
             cmd_idx++;
         }
