@@ -38,7 +38,7 @@
 // 'msg' == 'message'
 // 'buf' == 'buffer'
 
-#define DEBUG
+// #define DEBUG
 #define DEBUG_CONN 0
 #ifdef DEBUG
     #define PRINT(...)   Serial.print(__VA_ARGS__)
@@ -109,47 +109,32 @@ PlayedKey tmp_msg_pk;
 const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
 
 // @Cleanup: Only required for debugging whether the values get set correctly in the piano
-static inline void print_piano()
-{
-    PRINT(F("["));
-    PRINT(piano[0], DEC);
-    for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
-        PRINT(F(", "));
-        PRINT(piano[print_idx]);
-    }
-    PRINT(F("]\n"));
-}
+// static inline void print_piano()
+// {
+//     PRINT(F("["));
+//     PRINT(piano[0], DEC);
+//     for (print_idx = 1; print_idx < KEYS_AMOUNT; print_idx++) {
+//         PRINT(F(", "));
+//         PRINT(piano[print_idx]);
+//     }
+//     PRINT(F("]\n"));
+// }
 
-static inline void print_single_cmd(PidiCmd c)
-{
-    PRINT(F("{ key: "));
-    PRINT(key_strs[pidi_key(c)]);
-    PRINT(F(", octave: "));
-    PRINT(pidi_octave(c));
-    PRINT(F(", dt: "));
-    PRINT(pidi_dt(c));
-    PRINT(F("ms, len: "));
-    PRINT(pidi_len(c)*LEN_FACTOR);
-    PRINT(F("ms, velocity: "));
-    PRINT(pidi_velocity(c));
-    PRINT(F(" }"));
-}
+// static inline void print_single_cmd(PidiCmd c)
+// {
+//     PRINT(F("{ key: "));
+//     PRINT(key_strs[pidi_key(c)]);
+//     PRINT(F(", octave: "));
+//     PRINT(pidi_octave(c));
+//     PRINT(F(", dt: "));
+//     PRINT(pidi_dt(c));
+//     PRINT(F("ms, len: "));
+//     PRINT(pidi_len(c)*LEN_FACTOR);
+//     PRINT(F("ms, velocity: "));
+//     PRINT(pidi_velocity(c));
+//     PRINT(F(" }"));
+// }
 
-static inline void print_cmds()
-{
-    PRINT(F("Commands ("));
-    PRINT(cur_cmds_count);
-    PRINT(F(") ["));
-    if (cur_cmds_count > 0) {
-        PRINT(F("\n    "));
-        print_single_cmd(cur_cmds[0]);
-        for (print_idx = 1; print_idx < cur_cmds_count; print_idx++) {
-            PRINT(F(",\n    "));
-            print_single_cmd(cur_cmds[print_idx]);
-        }
-    }
-    PRINT(F("\n]\n"));
-}
 
 // Memset piano array to 0
 static inline void clear_piano()
@@ -171,8 +156,8 @@ static inline void ring_get_from_serial(AIL_RingBuffer *rb, u32 toRead)
     while (toRead > 0) {
         recv_byte = Serial.read();
 
-        PRINT(recv_byte, HEX);
-        PRINT(F(" "));
+        // PRINT(recv_byte, HEX);
+        // PRINT(F(" "));
 
         rb->data[rb->end] = recv_byte;
         rb->end = (rb->end + 1)%AIL_RING_SIZE;
@@ -454,11 +439,11 @@ timer_update_done:
                 PRINTLN(F("Received PIDI\n"));
                 request_next_chunk = false;
                 if (msg_data.chunk_index == 0) {
-                    // @TODO: This doesn't work with played_keys system anymore
                     music_timer = msg_data.new_time;
                     played_keys = msg_data.new_pks;
                     swap_cmd_buffers();
                     // print_piano();
+                    prev_cmd_time = 0;
                 }
                 send_msg(SMSG_SUCC);
             } break;
