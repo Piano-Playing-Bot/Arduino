@@ -401,6 +401,7 @@ timer_update_done:
                         PRINT(F(" -> "));
 #endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
+                        next_cmds[next_cmds_count-1].len /= 2;
 #if DEBUG_CONN
                         print_single_cmd(next_cmds[next_cmds_count - 1]);
                         PRINT(F("\n"));
