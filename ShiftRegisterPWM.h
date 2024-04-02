@@ -1,10 +1,7 @@
-/**
-  * Library for PWM control of the 74HC595 shift register.
-  * Created by Timo Denk (www.timodenk.com), 2017.
-  * Additional information is available at https://timodenk.com/blog/shiftregister-pwm-library/
-  * Released into the public domain.
-  */
-
+// This code was adapted from the ShiftRegisterPWM Library by Timo Denk (www.timodenk.com), 2017.
+// Additional information about their library is available at https://timodenk.com/blog/shiftregister-pwm-library/
+// Their library was released into the public domain
+// All Modifications are licensed under the license given in ./LICENSE
 
 #ifndef ShiftRegisterPWM_h
 #define ShiftRegisterPWM_h
@@ -14,7 +11,7 @@
 #include <avr/interrupt.h>
 
 
-/** 
+/**
   * Default pinning configuration
   * Can be changed from the .ino with #define ...
   * See "CustomPins" example sketch.
@@ -60,7 +57,7 @@ public:
 
 
   /**
-    * Constructor for a new ShiftRegisterPWM object. 
+    * Constructor for a new ShiftRegisterPWM object.
     * An object is equivalent to one shift register or multiple, serially connected shift registers.
     * @param shiftRegisterCount Number of serially connected shift registers. For a single one just 1. Maximum is 8. However, performance is likely to start causing trouble with lower values.
     * @param resolution PWM resolution, that is the number of possible PWM value. The value has to be between 2 and 255 (due to performance limitations).
@@ -93,9 +90,9 @@ public:
   /**
     * Set a pin of the shift register to a given PWM value.
     * @param pin The index of the pin (starting at 0). If multiple shift registers are chained, the first pin of the second shift register would be addressed with pin = 8.
-    * @param value The PWM value (between 0 and 255 as it will be scaled to the resolution that was passed to the constructor). 
+    * @param value The PWM value (between 0 and 255 as it will be scaled to the resolution that was passed to the constructor).
     */
-  void set(uint8_t pin, uint8_t value) 
+  void set(uint8_t pin, uint8_t value)
   {
     value = (uint8_t) (value / 255.0 * resolution + .5); // round
     uint8_t shiftRegister = pin / 8;
@@ -107,7 +104,7 @@ public:
   };
 
 
-  /** 
+  /**
     * Updates the shift register outputs. This function should be called as frequently as possible, usually within an ISR to guarantee a fixed update frequency.
     * For manual operation it is important to ensure that the function is called with a constant frequency that is suitable for the application. Commonly that is around 50 Hz * resolution for LEDs.
     */
@@ -124,14 +121,14 @@ public:
       }
     }
     ShiftRegisterPWM_toggleLatchPinTwice();
-    
+
     if (++time == resolution) {
       time = 0;
     }
   };
 
   /**
-    * Calles void ShiftRegisterPWM::interrupt(UpdateFrequency updateFrequency) with the UpdateFrequency Medium 
+    * Calles void ShiftRegisterPWM::interrupt(UpdateFrequency updateFrequency) with the UpdateFrequency Medium
     * Have a look at the called function for more details.
     */
   void interrupt() const
@@ -140,17 +137,17 @@ public:
   };
 
 
-  /** 
+  /**
     * Initializes and starts the timer interrupt with a given update frequency.
     * The used timer is the Arduino UNO's timer 1.
     * The function can be called multiple times with different update frequencies in order to change the update frequency at any time.
-    * @param updateFrequency The update frequencies are either VerySlow @ 6,400 Hz, Slow @ 12,800 Hz, Fast @ 35,714 Hz, SuperFast @ 51,281.5 Hz, and Medium @ 25,600 Hz. 
+    * @param updateFrequency The update frequencies are either VerySlow @ 6,400 Hz, Slow @ 12,800 Hz, Fast @ 35,714 Hz, SuperFast @ 51,281.5 Hz, and Medium @ 25,600 Hz.
     * The actual PWM cycle length in seconds can be calculated by (resolution / frequency).
     */
   void interrupt(UpdateFrequency updateFrequency) const
   {
     cli(); // disable interrupts
-    
+
     // reset
     TCCR1A = 0; // set TCCR1A register to 0
     TCCR1B = 0; // set TCCR1B register to 0
@@ -161,32 +158,32 @@ public:
         OCR1A = 2499; // compare match register
         TCCR1B |= (1 << CS10); // prescaler 1
         break;
-        
+
       case Slow: // exactly 12,800 Hz interrupt frequency
         OCR1A = 1249; // compare match register
         TCCR1B |= (1 << CS10); // prescaler 1
         break;
-        
+
       case Fast: // aprox. 35,714 Hz interrupt frequency
         OCR1A = 55; // compare match register
         TCCR1B |= (1 << CS11); // prescaler 8
         break;
-        
+
       case SuperFast: // approx. 51,281.5 Hz interrupt frequency
         OCR1A = 311; // compare match register
         TCCR1B |= (1 << CS10); // prescaler 1
         break;
-        
+
       case Medium: // exactly 25,600 Hz interrupt frequency
       default:
         OCR1A = 624; // compare match register
         TCCR1B |= (1 << CS10); // prescaler 1
         break;
     }
-    
+
     TCCR1B |= (1 << WGM12); // turn on CTC mode
     TIMSK1 |= (1 << OCIE1A); // enable timer compare interrupt
-    
+
     sei(); // allow interrupts
   }
 
