@@ -39,6 +39,7 @@
 // 'buf' == 'buffer'
 
 // #define DEBUG
+// #define DEBUG_SINGLE_LED
 #define DEBUG_CONN 0
 #ifdef DEBUG
     #define PRINT(...)   Serial.print(__VA_ARGS__)
@@ -54,6 +55,7 @@
 #define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
 #define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
+#define MAX_LOOP_MS 30           // Maximum time that is expected to be spent in a single iteration of the main loop
 
 typedef struct {
     u16 chunk_index; // Index of the chunk as given by the message
@@ -71,12 +73,16 @@ PidiCmd cmds_buf2[CMDS_LIST_LEN] = { 0 };
 PlayedKeyList played_keys        = { 0 };
 PidiCmd *cur_cmds       = cmds_buf1;
 PidiCmd *next_cmds      = cmds_buf2;
-u32  cur_cmds_count     = 0;
-u32  next_cmds_count    = 0;
-u32  cmd_idx            = 0;
+u8   cur_cmds_count     = 0;
+u8   next_cmds_count    = 0;
+u8   cmd_idx            = 0;
+u8   cmds_idx2          = 0;
+AIL_STATIC_ASSERT(UINT8_MAX >= CMDS_LIST_LEN);
+i8   pk_idx             = 0;
+u8   active_keys_count  = 0;
+AIL_STATIC_ASSERT(INT8_MAX >= MAX_KEYS_AT_ONCE);
 u32  music_timer        = 0;
 u32  prev_cmd_time      = 0;
-u8   active_keys_count  = 0;
 bool is_music_playing   = true;
 bool request_next_chunk = false;
 AIL_RingBuffer rb       = { 0 };
@@ -133,6 +139,22 @@ const char *key_strs[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A",
 //     PRINT(F("ms, velocity: "));
 //     PRINT(pidi_velocity(c));
 //     PRINT(F(" }"));
+// }
+
+// static inline void print_cmds()
+// {
+//     PRINT(F("Commands ("));
+//     PRINT(cur_cmds_count);
+//     PRINT(F(") ["));
+//     if (cur_cmds_count > 0) {
+//         PRINT(F("\n    "));
+//         print_single_cmd(cur_cmds[0]);
+//         for (print_idx = 1; print_idx < cur_cmds_count; print_idx++) {
+//             PRINT(F(",\n    "));
+//             print_single_cmd(cur_cmds[print_idx]);
+//         }
+//     }
+//     PRINT(F("\n]\n"));
 // }
 
 
@@ -201,7 +223,7 @@ static inline void swap_cmd_buffers()
 // Set up I/O pins and interrupt for setting values in Shift-Registers
 void setup()
 {
-    #ifdef DEBUG
+    #ifdef DEBUG_SINGLE_LED
         pinMode(LED_BUILTIN, OUTPUT); // @Cleanup: to provide an LED for debugging
     #endif
     pinMode(2, OUTPUT); // sr data pin
@@ -235,8 +257,8 @@ void loop()
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
     }
-#ifdef DEBUG
-    if (is_music_playing && piano[MID_OCTAVE_START_IDX - 2*PIANO_KEY_AMOUNT + PIANO_KEY_C]) {
+#ifdef DEBUG_SINGLE_LED
+    if (is_music_playing && piano[MID_OCTAVE_START_IDX + PIANO_KEY_A]) {
         // PRINTLN(F("LED ON!"));
         digitalWrite(LED_BUILTIN, HIGH);
     }
@@ -249,12 +271,13 @@ void loop()
     if (is_music_playing) {
 apply_cur_cmds:
         if (music_timer < played_keys.start_time) {
-            PRINT(F("Current Time: "));
-            PRINT(music_timer);
-            PRINT(F(", Played Keys Time: "));
-            PRINTLN(played_keys.start_time);
+            Serial.print(F("Current Time: "));
+            Serial.print(music_timer);
+            Serial.print(F(", Played Keys Time: "));
+            Serial.println(played_keys.start_time);
         }
         update_played_keys(music_timer, piano, &played_keys);
+
         while (cmd_idx < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmd_idx]) <= music_timer) {
             apply_cmd_no_keys_update(cur_cmds[cmd_idx], piano, &played_keys);
             prev_cmd_time += pidi_dt(cur_cmds[cmd_idx]);
@@ -263,6 +286,12 @@ apply_cur_cmds:
             // Serial.print(F("\n"));
             // print_piano();
             cmd_idx++;
+        }
+
+        for (cmds_idx2 = cmd_idx; cmds_idx2 < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmds_idx2]) <= music_timer + MAX_LOOP_MS && played_keys.count > 0; cmds_idx2++) {
+            pk_idx = get_played_key_index(get_piano_idx(cur_cmds[cmds_idx2].key, cur_cmds[cmds_idx2].octave), played_keys);
+            piano[played_keys.keys[pk_idx].idx] = 0;
+            ARR_UNORDERED_RM(played_keys.keys, pk_idx, played_keys.count);
         }
 
         // If cur_cmds is done (& next_cmds even has any cmds) & we are not in the middle of reading the next PIDI message -> swap cur_cmds & next_cmds
@@ -401,7 +430,6 @@ timer_update_done:
                         PRINT(F(" -> "));
 #endif
                         next_cmds[next_cmds_count++] = decode_cmd_simple(encoded_cmd);
-                        next_cmds[next_cmds_count-1].len /= 2;
 #if DEBUG_CONN
                         print_single_cmd(next_cmds[next_cmds_count - 1]);
                         PRINT(F("\n"));
