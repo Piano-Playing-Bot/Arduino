@@ -2,7 +2,23 @@
 #define AIL_RING_SIZE 64
 #define AIL_RING_DEF static inline
 #define AIL_DBG_PRINT(x) Serial.print(x)
-#define AIL_ASSERT_COMMON(expr, msg) do { if (!(expr)) { AIL_DBG_PRINT("Assertion failed in " __FILE__ ":" AIL_STR_LINE "\n  " msg); } } while(0)
+
+// #define DEBUG             // uncomment to enable debug output
+// #define DEBUG_SINGLE_LED  // uncomment to light up builtin-LED for specified key
+#define DEBUG_CONN 0
+#ifdef DEBUG
+    #define PRINT(...)   Serial.print(__VA_ARGS__)
+    #define PRINTLN(...) Serial.println(__VA_ARGS__)
+#else
+    #define PRINT(...)   do {} while(0)
+    #define PRINTLN(...) do {} while(0)
+#endif
+
+#ifdef DEBUG
+    #define AIL_ASSERT_COMMON(expr, msg) do { if (!(expr)) { AIL_DBG_PRINT("Assertion failed in " __FILE__ ":" AIL_STR_LINE "\n  " msg); } } while(0)
+#else
+    #define AIL_ASSERT_COMMON(expr, msg) ((void)(expr));
+#endif
 
 #include "header.h"
 #include "ShiftRegisterPWM.h"
@@ -23,10 +39,7 @@
     // If a message has been starting to be read, continue reading bytes for it, building up the message data
     // When the message was parsed completely, react to it accordingly
 
-// @TODO: REQP messages do not provide the 4 bytes for indicating the expected index atm. Either this code or the Protocol should be updated to be consistent
-// @Performance: If we stay with max-speed at 1ms, we don't need a restTimer variable and simplify elapsed-time calculations
 // @Performance: Instead of using the ShitRegisterPWM library, we can copy the relevant parts of it and thus hardcode them
-// most importantly we could just send the values from the piano-array to the shift-registers directly without copying them into the library's internal "data" array first
 // @Performance: General optimizations can be made, like loop-unrolling, branchless-programming, etc.
 
 // Naming Conventions
@@ -38,24 +51,31 @@
 // 'msg' == 'message'
 // 'buf' == 'buffer'
 
-// #define DEBUG
-// #define DEBUG_SINGLE_LED
-#define DEBUG_CONN 0
-#ifdef DEBUG
-    #define PRINT(...)   Serial.print(__VA_ARGS__)
-    #define PRINTLN(...) Serial.println(__VA_ARGS__)
-#else
-    #define PRINT(...)   do {} while(0)
-    #define PRINTLN(...) do {} while(0)
-#endif
-
-
-#define CLOCK_CYCLE_LEN 1        // specifies how many milliseconds each step between applying new commands should take
 #define SHIFT_REGISTER_COUNT 11  // Amount of Shift-Registers used
 #define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
 #define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
 #define MAX_LOOP_MS 30           // Maximum time that is expected to be spent in a single iteration of the main loop
+#define KEYS_AMOUNT 88           // Amount of keys on the piano
+#define STARTING_KEY PIANO_KEY_A // Lowest key on the piano we use
+#define MAX_KEYS_AT_ONCE 10      // The maximum amount of keys to play at once
+#define FULL_OCTAVES_AMOUNT ((88 - (PIANO_KEY_AMOUNT - STARTING_KEY))/PIANO_KEY_AMOUNT) // Amount of full octaves (containing all 12 keys) on our piano
+#define LAST_OCTAVE_LEN (KEYS_AMOUNT - (FULL_OCTAVES_AMOUNT*PIANO_KEY_AMOUNT + (PIANO_KEY_AMOUNT - STARTING_KEY))) // Amount of keys in the highest (none-full) octave
+#define MID_OCTAVE_START_IDX ((PIANO_KEY_AMOUNT - STARTING_KEY) + PIANO_KEY_AMOUNT*(FULL_OCTAVES_AMOUNT/2)) // Number of keys before the frst key in the middle octave on our piano
+#define CMDS_LIST_LEN (32 / sizeof(PidiCmd)) // Amount of PidiCmds per buffer
+
+typedef struct PlayedKey {
+    u8  len;  // time in ms*LEN_FACTOR for which the note should still be played
+    u8  idx;  // index of the note in the `piano` array.
+} PlayedKey;
+AIL_STATIC_ASSERT(KEYS_AMOUNT < UINT8_MAX);
+
+typedef struct PlayedKeyList {
+    u32 start_time; // time in ms to which counting the all PlayedKeys lengths is relative to
+    u8  count;      // amount of currently played keys
+    PlayedKey keys[MAX_KEYS_AT_ONCE];
+} PlayedKeyList;
+AIL_STATIC_ASSERT(MAX_KEYS_AT_ONCE < UINT8_MAX);
 
 typedef struct {
     u16 cmds_count; // Amount of remaining commands in message
@@ -106,7 +126,6 @@ bool correct_magic;
 u32  n;
 u32  res;
 u16  print_idx;
-u8   reply[MAX_SERVER_MSG_SIZE];
 u8   encoded_cmd[ENCODED_CMD_LEN];
 u8   min_idx;
 u8   u8_idx;
@@ -174,7 +193,6 @@ static inline void ring_get_from_serial(AIL_RingBuffer *rb, u32 toRead)
 // Send a message back to the client
 static inline void send_msg(ServerMsgType type)
 {
-    AIL_STATIC_ASSERT(MAX_SERVER_MSG_SIZE == 6);
     // @Performance: Further optimization by manually inlining the Serial.write call maybe...
     PRINT(F("\n"));
     Serial.write('S');
@@ -187,6 +205,96 @@ static inline void send_msg(ServerMsgType type)
     }
     Serial.flush(); // Very important for client to receive complete message
     PRINT(F("\n"));
+}
+
+static inline u8 get_piano_idx(PianoKey key, i8 octave)
+{
+    AIL_ASSERT(key < PIANO_KEY_AMOUNT);
+    i16 idx = MID_OCTAVE_START_IDX + PIANO_KEY_AMOUNT*(i16)octave + (i16)key;
+    if (idx < 0) idx = (key < STARTING_KEY)*(PIANO_KEY_AMOUNT) + key - STARTING_KEY;
+    else if (idx >= KEYS_AMOUNT) idx = KEYS_AMOUNT + key - LAST_OCTAVE_LEN - (key >= LAST_OCTAVE_LEN)*PIANO_KEY_AMOUNT;
+    AIL_ASSERT(idx >= 0);
+    AIL_ASSERT(idx < KEYS_AMOUNT);
+    AIL_STATIC_ASSERT(KEYS_AMOUNT <= UINT8_MAX);
+    return (u8)idx;
+}
+
+#define ARR_UNORDERED_RM(arr, idx, len) (arr)[(idx)] = (arr)[--(len)]
+
+static inline i8 get_played_key_index(u8 piano_idx, PlayedKeyList played_keys)
+{
+    for (i8 i = 0; i < played_keys.count; i++) {
+        if (played_keys.keys[i].idx == piano_idx) return i;
+    }
+    return -1;
+}
+
+static inline void update_played_keys(u32 cur_time, u8 piano[KEYS_AMOUNT], PlayedKeyList *played_keys)
+{
+    u32 time_offset = cur_time - played_keys->start_time;
+    AIL_ASSERT(cur_time >= played_keys->start_time);
+    played_keys->start_time = cur_time;
+    for (u8 i = 0; i < played_keys->count; i++) {
+        if (played_keys->keys[i].len*LEN_FACTOR <= time_offset) {
+            piano[played_keys->keys[i].idx] = 0;
+            ARR_UNORDERED_RM(played_keys->keys, i, played_keys->count);
+            i--;
+            continue;
+        }
+        played_keys->keys[i].len -= time_offset/LEN_FACTOR;
+    }
+}
+
+static inline void apply_cmd_no_keys_update(PidiCmd cmd, u8 piano[KEYS_AMOUNT], PlayedKeyList *played_keys)
+{
+    u8 idx     = get_piano_idx(pidi_key(cmd), pidi_octave(cmd));
+    piano[idx] = pidi_velocity(cmd);
+
+    i8 played_idx = -1;
+    u8 next_off_key_idx = 0;
+    for (u8 i = 0; i < played_keys->count; i++) {
+        if (played_keys->keys[i].idx == idx) {
+            played_idx = i;
+        }
+        if (played_keys->keys[i].len < played_keys->keys[next_off_key_idx].len) {
+            next_off_key_idx = i;
+        }
+    }
+
+    if (pidi_velocity(cmd)) {
+        if (played_idx < 0) {
+            if (played_keys->count == MAX_KEYS_AT_ONCE) {
+                piano[played_keys->keys[next_off_key_idx].idx] = 0;
+                played_idx = next_off_key_idx;
+            } else {
+                played_idx = played_keys->count++;
+            }
+            played_keys->keys[played_idx].idx = idx;
+            played_keys->keys[played_idx].len = pidi_len(cmd);
+        } else {
+            played_keys->keys[played_idx].len = pidi_len(cmd);
+        }
+    } else if (played_idx >= 0) {
+        ARR_UNORDERED_RM(played_keys->keys, played_idx, played_keys->count);
+        piano[idx] = 0;
+    }
+}
+
+static inline void apply_pidi_cmd(u32 cur_time, PidiCmd cmd, u8 piano[KEYS_AMOUNT], PlayedKeyList *played_keys)
+{
+    update_played_keys(cur_time, piano, played_keys);
+    apply_cmd_no_keys_update(cmd, piano, played_keys);
+}
+
+static inline void apply_played_key(PlayedKeySPPP pk, u8 piano[KEYS_AMOUNT], PlayedKeyList *played_keys)
+{
+    PidiCmd cmd;
+    cmd.dt       = 0,
+    cmd.key      = sppp_pk_key(pk),
+    cmd.len      = sppp_pk_len(pk),
+    cmd.octave   = sppp_pk_octave(pk),
+    cmd.velocity = sppp_pk_velocity(pk),
+    apply_cmd_no_keys_update(cmd, piano, played_keys);
 }
 
 static inline void swap_cmd_buffers()
