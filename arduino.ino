@@ -55,7 +55,7 @@
 #define PWM_RESOLUTION 8         // Amount of bits to use for each PWM value -> specifies maximum value for PWM values and required amount of clock cycles to address all keys on the piano
 #define MIN_KEY_VAL 210          // Minimum value to set for a motor to move, if a key should be played
 #define MAX_KEY_VAL 255          // Maximum value to set for a motor to move, if a key should be played
-#define MAX_LOOP_MS 30           // Maximum time that is expected to be spent in a single iteration of the main loop
+#define MIN_PERIOD_MS 40         // Minimum period that a key needs to be off for, before it can be pressed again to register two key-presses
 #define KEYS_AMOUNT 88           // Amount of keys on the piano
 #define STARTING_KEY PIANO_KEY_A // Lowest key on the piano we use
 #define MAX_KEYS_AT_ONCE 10      // The maximum amount of keys to play at once
@@ -376,7 +376,7 @@ apply_cur_cmds:
             cmd_idx++;
         }
 
-        for (cmds_idx2 = cmd_idx; cmds_idx2 < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmds_idx2]) <= music_timer + MAX_LOOP_MS && played_keys.count > 0; cmds_idx2++) {
+        for (cmds_idx2 = cmd_idx; cmds_idx2 < cur_cmds_count && prev_cmd_time + pidi_dt(cur_cmds[cmds_idx2]) <= music_timer + MIN_PERIOD_MS && played_keys.count > 0; cmds_idx2++) {
             pk_idx = get_played_key_index(get_piano_idx(cur_cmds[cmds_idx2].key, cur_cmds[cmds_idx2].octave), played_keys);
             piano[played_keys.keys[pk_idx].idx] = 0;
             ARR_UNORDERED_RM(played_keys.keys, pk_idx, played_keys.count);
