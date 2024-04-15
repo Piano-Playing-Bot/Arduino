@@ -343,7 +343,8 @@ void loop()
     // Set values for Shift-Registers
     if (is_music_playing) {
         for (i = 0; i < KEYS_AMOUNT; i++) {
-            sr.set(i, !piano[i] ? piano[i] : AIL_LERP(AIL_MAX(((f32)volume_factor*piano[i])/((f32)MAX_VELOCITY), 1.0f), MIN_KEY_VAL, MAX_KEY_VAL));
+            f32 tmp = volume_factor*piano[i];
+            sr.set(i, tmp <= 0.001f ? 0 : AIL_LERP(AIL_MAX(tmp/((f32)MAX_VELOCITY), 1.0f), MIN_KEY_VAL, MAX_KEY_VAL));
         }
     } else {
         for (i = 0; i < KEYS_AMOUNT; i++) sr.set(i, 0);
@@ -387,9 +388,6 @@ apply_cur_cmds:
             swap_cmd_buffers();
             goto apply_cur_cmds;
         }
-
-        // Update timer
-        music_timer += millis() - start;
     }
 timer_update_done:
     ////////////////
@@ -525,4 +523,9 @@ timer_update_done:
         }
         msg_type = CMSG_NONE;
     }
+
+    //////////////////
+    // Elapsed Time //
+    //////////////////
+    if (is_music_playing) music_timer += speed_factor*(millis() - start);
 }
